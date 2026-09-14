@@ -1,4 +1,4 @@
-# Adaptive Agentic RAG V1
+# Agentic RAG V1
 
 <p align="center">
   <strong>Autonomous Multi-Tier Hybrid Retrieval, Semantic Caching & Grounded Context Synthesis</strong>
