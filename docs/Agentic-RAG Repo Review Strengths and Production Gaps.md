@@ -6,12 +6,12 @@ Historical review of github.com/derick1129/Agentic-rag against a production-leve
 
 PR #2 (auth) and PR #1 (retrieval) were merged on 2026-10-12. They add JWT request authentication, sanitization, SQL read-only protections, tenant RLS policies, retrieval rewrite/grading, and a post-generation claim check. The items below that describe these capabilities as missing are historical observations, not current gaps.
 
-Remaining review findings from the merged implementation:
+Follow-up fixes on `codex/fix-review-findings` address the implementation findings below. The PostgreSQL integration path still needs environment-backed validation before making a production-readiness claim.
 
-- **RLS context:** RLS policies rely on `app.current_tenant_id`; every transaction that reads or writes `documents` or `chunks` must set this value transaction-locally.
-- **SQL tenant scope:** tenant predicates must be applied independently to tables in nested queries and CTEs, not only to the outer query.
-- **Groundedness semantics:** the default claim checker uses token overlap. Treat its result as a heuristic unless a real entailment provider is configured and evaluated.
-- **Retrieval grading:** BM25 and cross-encoder score margins need calibration against a labeled evaluation set before enabling a threshold as a quality gate.
+- **RLS context:** SQLAlchemy transactions now apply `app.current_tenant_id` from the request/job context; retrieval, ingestion, and SQL tool sessions set it transaction-locally.
+- **SQL tenant scope:** tenant predicates are now applied independently to each query block, including nested selects and CTE source queries.
+- **Groundedness semantics:** the default claim checker remains token overlap and now marks its method as `heuristic_overlap` in span attributes.
+- **Retrieval grading:** the score-margin gate is disabled by default. Set `RETRIEVAL_GRADER_THRESHOLD` only after calibration against a labeled evaluation set.
 - **Operational readiness:** authentication and database isolation still need deployment configuration and integration validation against PostgreSQL using the production database role.
 
 **Scope note:** This review is based on the README, folder structure, and file listing only, not the source code. Some items listed as missing may be partly implemented in code the README doesn't mention, so verify each against the codebase.
