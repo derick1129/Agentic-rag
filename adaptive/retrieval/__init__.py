@@ -11,6 +11,7 @@ from adaptive.retrieval.contracts import (
 )
 from adaptive.retrieval.hybrid import HybridRetrieverService
 from adaptive.retrieval.neondb_dense import NeonDBDenseStage
+from adaptive.retrieval.query_rewrite import QueryRewrite, QueryRewriteResult
 from adaptive.retrieval.retrieval_grader import RetrievalGrader, RetrievalGraderResult
 
 __all__ = [
@@ -25,4 +26,6 @@ __all__ = [
     "NeonDBDenseStage",
     "RetrievalGrader",
     "RetrievalGraderResult",
+    "QueryRewrite",
+    "QueryRewriteResult",
 ]
