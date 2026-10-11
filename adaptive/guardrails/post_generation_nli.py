@@ -307,6 +307,7 @@ class NLIValidator:
     ) -> NLIResult:
         span_attributes: dict[str, Any] = {
             "answer.nli.status": status,
+            "answer.nli.method": "provider" if self.provider is not None else "heuristic_overlap",
             "answer.nli.claim_violations_count": len(claim_violations),
             "answer.nli.evidence_coverage": coverage,
         }
