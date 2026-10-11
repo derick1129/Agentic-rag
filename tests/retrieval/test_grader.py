@@ -1,5 +1,7 @@
 """Tests for RetrievalGrader."""
 
+# ruff: noqa: ANN001, E501, E702, PLR2004
+
 from adaptive.interfaces import Chunk
 from adaptive.retrieval.contracts import ScoredChunk
 from adaptive.retrieval.retrieval_grader import RetrievalGrader, RetrievalGraderResult

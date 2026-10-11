@@ -1,5 +1,7 @@
 """Deterministic query rewrite with language guard and ordered transforms."""
 
+# ruff: noqa: PLR2004
+
 from __future__ import annotations
 
 import re

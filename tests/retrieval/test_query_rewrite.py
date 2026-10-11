@@ -1,5 +1,7 @@
 """Tests for QueryRewrite."""
 
+# ruff: noqa: ANN001, E501, E702, PLR2004
+
 from adaptive.retrieval.query_rewrite import QueryRewrite, QueryRewriteResult
 
 

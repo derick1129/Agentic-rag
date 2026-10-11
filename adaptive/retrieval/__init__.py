@@ -12,7 +12,12 @@ from adaptive.retrieval.contracts import (
 from adaptive.retrieval.hybrid import HybridRetrieverService
 from adaptive.retrieval.neondb_dense import NeonDBDenseStage
 from adaptive.retrieval.query_rewrite import QueryRewrite, QueryRewriteResult
-from adaptive.retrieval.retrieval_grader import RetrievalGrader, RetrievalGraderResult
+from adaptive.retrieval.retrieval_grader import (
+    RetrievalGrader,
+    RetrievalGraderBridge,
+    RetrievalGraderDiagnostics,
+    RetrievalGraderResult,
+)
 
 __all__ = [
     "EmbeddingProvider",
@@ -25,6 +30,8 @@ __all__ = [
     "BM25Stage",
     "NeonDBDenseStage",
     "RetrievalGrader",
+    "RetrievalGraderBridge",
+    "RetrievalGraderDiagnostics",
     "RetrievalGraderResult",
     "QueryRewrite",
     "QueryRewriteResult",

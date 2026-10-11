@@ -17,6 +17,14 @@ async def _maybe_await(value: Any) -> Any:
     return await value if inspect.isawaitable(value) else value
 
 
+async def _search_stage(stage: Any, query: RetrievalQuery, limit: int) -> list[ScoredChunk]:
+    if hasattr(stage, "search"):
+        return await _maybe_await(stage.search(query, limit))
+    if callable(stage):
+        return await _maybe_await(stage(query, limit))
+    return []
+
+
 class HybridRetrieverService:
     def __init__(
         self,
@@ -41,8 +49,8 @@ class HybridRetrieverService:
         started = time.monotonic()
         stage_limit = self.stage_limit or max(query.limit, 1)
         bm25_hits, dense_hits = (
-            await _maybe_await(self.bm25.search(query, stage_limit)),
-            await _maybe_await(self.dense.search(query, stage_limit)),
+            await _search_stage(self.bm25, query, stage_limit),
+            await _search_stage(self.dense, query, stage_limit),
         )
         fused: dict[str, ScoredChunk] = {}
         for stage_hits in (bm25_hits, dense_hits):
