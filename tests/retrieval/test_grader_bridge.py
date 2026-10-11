@@ -7,7 +7,7 @@ import pytest
 from adaptive.interfaces import Chunk, RequestContext, RetrievalQuery
 from adaptive.retrieval.contracts import ScoredChunk
 from adaptive.retrieval.hybrid import HybridRetrieverService
-from adaptive.retrieval.retrieval_grader import RetrievalGraderBridge
+from adaptive.retrieval.retrieval_grader import RetrievalGrader, RetrievalGraderBridge
 
 
 def make_chunk(chunk_id: str, text: str = "text") -> Chunk:
@@ -58,7 +58,9 @@ async def test_retrieve_accepts_when_reranker_outperforms():
         dense=stage_dense,
         reranker=GoodReranker(),
     )
-    bridge = RetrievalGraderBridge(retriever, use_rewrite=True)
+    bridge = RetrievalGraderBridge(
+        retriever, grader=RetrievalGrader(grade_threshold=0.05), use_rewrite=True
+    )
     context = RequestContext(tenant_id="acme", subject_id="u1", acl=frozenset({"public"}))
     result = await bridge.retrieve(
         RetrievalQuery(text="pricing plan", context=context, limit=3)
@@ -94,7 +96,7 @@ async def test_retrieve_triggers_rewrite_and_dense_retry_on_rejection():
 
     class MediocreReranker:
         async def rerank(self, query, candidates, limit):
-            # Only 0.02 above BM25, below default 0.05 threshold
+            # Only 0.02 above BM25, below the configured 0.05 threshold.
             return [ScoredChunk(chunk=c1, score=0.82)]
 
     retriever = HybridRetrieverService(
@@ -102,7 +104,9 @@ async def test_retrieve_triggers_rewrite_and_dense_retry_on_rejection():
         dense=stage_dense,
         reranker=MediocreReranker(),
     )
-    bridge = RetrievalGraderBridge(retriever, use_rewrite=True)
+    bridge = RetrievalGraderBridge(
+        retriever, grader=RetrievalGrader(grade_threshold=0.05), use_rewrite=True
+    )
     context = RequestContext(tenant_id="acme", subject_id="u1", acl=frozenset({"public"}))
     orig_text = "How much does the plan cost?"
     result = await bridge.retrieve(query=orig_text, limit=3, context=context)
@@ -144,7 +148,9 @@ async def test_retrieve_without_rewrite_does_not_retry():
         dense=stage_dense,
         reranker=MediocreReranker(),
     )
-    bridge = RetrievalGraderBridge(retriever, use_rewrite=False)
+    bridge = RetrievalGraderBridge(
+        retriever, grader=RetrievalGrader(grade_threshold=0.05), use_rewrite=False
+    )
     context = RequestContext(tenant_id="acme", subject_id="u1", acl=frozenset({"public"}))
     result = await bridge.retrieve(
         RetrievalQuery(text="How much does the plan cost?", context=context, limit=3)
