@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from adaptive.api.auth import get_request_context
+from adaptive.api.auth import authenticate_request, get_request_context
 from adaptive.api.schemas import (
     HealthResponse,
     IngestionRequest,
@@ -325,7 +325,7 @@ def create_app() -> FastAPI:
     @app.post("/v1/ingestion", response_model=IngestionResponse)
     async def ingest_document(
         request: IngestionRequest,
-        context: RequestContext = Depends(get_request_context)
+        context: RequestContext = Depends(authenticate_request)
     ):
         if not _ingestion_service:
             raise HTTPException(
@@ -351,7 +351,7 @@ def create_app() -> FastAPI:
     async def ingest_upload(
         file: UploadFile = File(...),
         metadata: str = Form("{}"),
-        context: RequestContext = Depends(get_request_context)
+        context: RequestContext = Depends(authenticate_request)
     ):
         if not _ingestion_service:
             raise HTTPException(
@@ -420,7 +420,7 @@ def create_app() -> FastAPI:
     @app.post("/v1/queries", response_model=QueryResponse)
     async def query_documents(
         request: QueryRequest,
-        context: RequestContext = Depends(get_request_context)
+        context: RequestContext = Depends(authenticate_request)
     ):
         if not _retrieval_service:
             raise HTTPException(

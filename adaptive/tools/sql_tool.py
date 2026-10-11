@@ -4,32 +4,43 @@ from __future__ import annotations
 
 import inspect
 import time
-from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from sqlalchemy import Engine, text
+
+from adaptive.db.session import read_only_engine
 from adaptive.interfaces import RouteTool, ToolContext, ToolResult, ToolStatus
 from adaptive.tools.sql_validate import SQLValidationError, validate_sql
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 
 class SqlTool:
     tool_type = RouteTool.SQL
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
-        executor: Any,
+        executor: Any = None,  # noqa: ANN401
         *,
+        engine: Engine | None = None,
         allowed_schemas: set[str] | frozenset[str] = frozenset({"public"}),
         max_rows: int = 1000,
         statement_timeout_ms: int = 5000,
         query_builder: Callable[[str], str | Awaitable[str]] | None = None,
     ) -> None:
-        self.executor = executor
+        if executor is not None:
+            self.executor = executor
+        elif engine is not None:
+            self.executor = engine
+        else:
+            self.executor = read_only_engine
         self.allowed_schemas = allowed_schemas
         self.max_rows = max_rows
         self.statement_timeout_ms = statement_timeout_ms
         self.query_builder = query_builder
 
-    async def _maybe(self, value: Any) -> Any:
+    async def _maybe(self, value: Any) -> Any:  # noqa: ANN401
         return await value if inspect.isawaitable(value) else value
 
     async def run(self, context: ToolContext) -> ToolResult:
@@ -47,7 +58,15 @@ class SqlTool:
                 await self._maybe(self.executor.set_read_only(True))
             if hasattr(self.executor, "set_statement_timeout"):
                 await self._maybe(self.executor.set_statement_timeout(self.statement_timeout_ms))
-            if hasattr(self.executor, "execute"):
+            if isinstance(self.executor, Engine):
+                with self.executor.connect() as conn:
+                    if conn.dialect.name == "postgresql":
+                        conn.execute(
+                            text(f"SET LOCAL statement_timeout = {int(self.statement_timeout_ms)}")
+                        )
+                    res = conn.execute(text(validated.sql), validated.params)
+                    rows = [dict(m) for m in res.mappings().all()]
+            elif hasattr(self.executor, "execute"):
                 rows = await self._maybe(
                     self.executor.execute(
                         validated.sql,
