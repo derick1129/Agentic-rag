@@ -12,6 +12,7 @@ from adaptive.interfaces import (
     Budget,
     CacheStatus,
     Chunk,
+    GuardrailAction,
     RequestContext,
     RouteDecision,
     RouteDepth,
@@ -205,3 +206,61 @@ async def test_agent_does_not_send_unauthorized_observation_to_synthesis() -> No
     assert result.answer is not None
     assert result.answer.groundedness_status == "refused"
     assert result.answer.refusal_reason == "tenant_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_check_post_generation_denies_ungrounded_answer():
+    runner = GuardrailRunner()
+    ans = answer("The refund window is 90 days.", citations=[{"chunk_id": "c1"}])
+    evidence = [{"id": "c1", "text": "Refunds are available within 30 days.", "tenant_id": "tenant-1", "acl": ["public"]}]
+    result = await runner.check_post_generation(ans, evidence, RequestContext(tenant_id="tenant-1", subject_id="user-1"))
+    assert result.action == GuardrailAction.DENY
+    assert result.reason == "ungrounded"
+
+
+@pytest.mark.asyncio
+async def test_check_post_generation_allows_grounded_answer():
+    runner = GuardrailRunner()
+    ans = answer("Refunds are available within thirty days.", citations=[{"chunk_id": "chunk-1"}])
+    evidence = [visible_chunk()]
+    result = await runner.check_post_generation(ans, evidence, RequestContext(tenant_id="acme", subject_id="user-1"))
+    assert result.action == GuardrailAction.ALLOW
+    assert result.reason == "grounded"
+
+
+@pytest.mark.asyncio
+async def test_check_post_generation_qualifies_partial_answer():
+    runner = GuardrailRunner()
+    ans = answer(
+        "Refunds are available within thirty days. Unrelated luxury space travel is free.",
+        citations=[{"chunk_id": "chunk-1"}],
+    )
+    evidence = [visible_chunk()]
+    result = await runner.check_post_generation(ans, evidence, RequestContext(tenant_id="acme", subject_id="user-1"))
+    assert result.action == GuardrailAction.QUALIFY
+    assert result.reason == "partial"
+
+
+@pytest.mark.asyncio
+async def test_check_post_generation_denies_refused_no_citations():
+    runner = GuardrailRunner()
+    ans = answer("Refunds are available within thirty days.", citations=[])
+    evidence = [visible_chunk()]
+    result = await runner.check_post_generation(ans, evidence, RequestContext(tenant_id="acme", subject_id="user-1"))
+    assert result.action == GuardrailAction.DENY
+    assert result.reason == "no_citations"
+
+
+@pytest.mark.asyncio
+async def test_check_post_generation_accepts_raw_string_answer():
+    runner = GuardrailRunner()
+    evidence = [visible_chunk()]
+    result = await runner.check_post_generation(
+        "Refunds are available within thirty days.",
+        evidence,
+        RequestContext(tenant_id="acme", subject_id="user-1"),
+        citations=[{"chunk_id": "chunk-1"}],
+    )
+    assert result.action == GuardrailAction.ALLOW
+    assert result.reason == "grounded"
+
