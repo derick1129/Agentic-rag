@@ -35,6 +35,7 @@ def test_ground_answer_supported_by_evidence():
     assert result.evidence_coverage >= 0.55
     assert result.claim_violations == []
     assert result.span_attributes["answer.nli.status"] == "grounded"
+    assert result.span_attributes["answer.nli.method"] == "heuristic_overlap"
     assert result.span_attributes["answer.nli.claim_violations_count"] == 0
 
 
