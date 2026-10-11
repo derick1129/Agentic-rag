@@ -11,11 +11,14 @@ from unittest.mock import MagicMock
 import pytest
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import sessionmaker
 
 from adaptive.db.session import (
+    apply_tenant_context,
     create_database_engine,
     create_read_only_database_engine,
     read_only_engine,
+    set_tenant_context,
 )
 from adaptive.interfaces import (
     Budget,
@@ -89,6 +92,28 @@ def test_db_path() -> Generator[str, None, None]:
 
 def test_read_only_engine_exports_engine_instance() -> None:
     assert isinstance(read_only_engine, Engine)
+
+
+def test_apply_tenant_context_uses_transaction_local_postgres_setting() -> None:
+    connection = MagicMock()
+    connection.dialect.name = "postgresql"
+
+    apply_tenant_context(connection, " acme ")
+
+    statement, params = connection.execute.call_args.args
+    assert "set_config('app.current_tenant_id', :tenant_id, true)" in str(statement)
+    assert params == {"tenant_id": "acme"}
+
+
+def test_set_tenant_context_is_retained_for_session_transactions() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    session = sessionmaker(bind=engine)()
+    try:
+        set_tenant_context(session, "acme")
+        assert session.info["tenant_id"] == "acme"
+    finally:
+        session.close()
+        engine.dispose()
 
 
 def test_read_only_engine_uses_separate_connection_pool(test_db_path: str) -> None:
