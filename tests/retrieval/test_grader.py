@@ -36,6 +36,19 @@ def test_returns_accept_when_reranker_better_than_bm25():
     assert result.score == 0.2
 
 
+def test_default_grader_does_not_gate_uncalibrated_score_scales():
+    grader = RetrievalGrader()
+    result = grader.assess(
+        query="refund policy",
+        bm25_top1=make_chunk("b1", score=0.8),
+        reranked_top1=make_chunk("r1", score=0.82),
+    )
+
+    assert result.accept is True
+    assert result.reason == "uncalibrated_scores"
+    assert result.grade_threshold is None
+
+
 def test_rejects_when_reranker_not_better():
     grader = RetrievalGrader(grade_threshold=0.05)
     bm25 = make_chunk("b1", score=0.8)
