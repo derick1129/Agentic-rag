@@ -1,5 +1,7 @@
 """Integration smoke test for retrieval + guardrail + auth without live model credentials."""
 
+# ruff: noqa: ANN001, ANN201, ANN401, E501, PLR2004, F401
+
 from __future__ import annotations
 
 from typing import Any
