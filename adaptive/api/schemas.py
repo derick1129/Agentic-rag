@@ -42,6 +42,8 @@ class QueryResponse(BaseModel):
     answer: Optional[str] = Field(default=None, description="Generated answer text")
     citations: Optional[List[Dict[str, Any]]] = Field(default=None, description="Citations used in answer")
     cache_status: Optional[str] = Field(default="bypass", description="Cache status: hit, miss, or bypass")
+    groundedness_status: Optional[str] = Field(default=None, description="Post-generation NLI status")
+    diagnostics: Optional[Dict[str, Any]] = Field(default=None, description="Retrieval and guardrail diagnostics")
 
 
 class HealthResponse(BaseModel):
