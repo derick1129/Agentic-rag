@@ -11,6 +11,7 @@ from adaptive.retrieval.contracts import (
 )
 from adaptive.retrieval.hybrid import HybridRetrieverService
 from adaptive.retrieval.neondb_dense import NeonDBDenseStage
+from adaptive.retrieval.retrieval_grader import RetrievalGrader, RetrievalGraderResult
 
 __all__ = [
     "EmbeddingProvider",
@@ -22,4 +23,6 @@ __all__ = [
     "HybridRetrieverService",
     "BM25Stage",
     "NeonDBDenseStage",
+    "RetrievalGrader",
+    "RetrievalGraderResult",
 ]
