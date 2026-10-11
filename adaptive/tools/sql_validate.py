@@ -25,34 +25,42 @@ class ValidatedSQL:
         if not tenant_id or any(char in tenant_id for char in ("\x00", "\n", "\r")):
             raise SQLValidationError("tenant_id is invalid")
 
-        predicate: exp.Expression | None = None
-        tables = list(self.ast.find_all(exp.Table))
-        for table in tables:
-            # A CTE reference is not a physical table and cannot be scoped here.
-            if table.name in {cte.alias_or_name for cte in self.ast.find_all(exp.CTE)}:
-                continue
-            qualifier = table.alias_or_name or table.name
-            column = exp.column("tenant_id", table=qualifier)
-            current = exp.EQ(this=column, expression=exp.Literal.string(tenant_id))
-            predicate = (
-                current if predicate is None else exp.And(this=predicate, expression=current)
-            )
+        scoped_table_count = 0
+        for select in self.ast.find_all(exp.Select):
+            # Scope each query block independently. Predicates added to an outer
+            # SELECT do not protect tables read by a subquery or CTE.
+            cte_names = {
+                cte.alias_or_name
+                for cte in select.find_all(exp.CTE)
+                if cte.find_ancestor(exp.Select) is select
+            }
+            predicate: exp.Expression | None = None
+            for table in select.find_all(exp.Table):
+                if table.find_ancestor(exp.Select) is not select or table.name in cte_names:
+                    continue
+                qualifier = table.alias_or_name or table.name
+                current = exp.EQ(
+                    this=exp.column("tenant_id", table=qualifier),
+                    expression=exp.Literal.string(tenant_id),
+                )
+                predicate = (
+                    current if predicate is None else exp.And(this=predicate, expression=current)
+                )
+                scoped_table_count += 1
 
-        if predicate is None:
+            if predicate is not None:
+                existing = select.args.get("where")
+                select.set(
+                    "where",
+                    exp.Where(
+                        this=predicate
+                        if existing is None
+                        else exp.And(this=existing.this, expression=predicate)
+                    ),
+                )
+
+        if scoped_table_count == 0:
             raise SQLValidationError("query must reference a tenant-scoped table")
-
-        select = self.ast.find(exp.Select)
-        if select is None:
-            raise SQLValidationError("only SELECT statements are allowed")
-        existing = select.args.get("where")
-        select.set(
-            "where",
-            exp.Where(
-                this=predicate
-                if existing is None
-                else exp.And(this=existing.this, expression=predicate)
-            ),
-        )
         return ValidatedSQL(
             sql=self.ast.sql(dialect="postgres"),
             ast=self.ast,
