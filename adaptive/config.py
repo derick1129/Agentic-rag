@@ -188,6 +188,11 @@ class Settings(BaseSettings):
     auth_jwt_audience: str = Field(default="adaptive-rag", alias="AUTH_JWT_AUDIENCE")
     auth_jwt_issuer: str = Field(default="adaptive-rag-idp", alias="AUTH_JWT_ISSUER")
 
+    # BM25 and cross-encoder scores are not comparable until calibrated on an eval set.
+    retrieval_grader_threshold: float | None = Field(
+        default=None, alias="RETRIEVAL_GRADER_THRESHOLD", ge=0.0
+    )
+
     @property
     def auth_dev_acl_set(self) -> frozenset[str]:
         return frozenset(a.strip() for a in self.auth_dev_acl.split(",") if a.strip())

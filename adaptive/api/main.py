@@ -30,7 +30,7 @@ from adaptive.ingestion.service import IngestionService
 from adaptive.observability.attributes import TelemetryConfig
 from adaptive.observability.tracing import configure_telemetry
 from adaptive.retrieval.hybrid import HybridRetrieverService
-from adaptive.retrieval.retrieval_grader import RetrievalGraderBridge
+from adaptive.retrieval.retrieval_grader import RetrievalGrader, RetrievalGraderBridge
 from adaptive.retrieval.contracts import HashEmbeddingProvider
 from adaptive.cache.redis import RedisCacheStore
 from adaptive.cache.service import SemanticCacheService
@@ -233,6 +233,7 @@ async def lifespan(app: FastAPI):
         )
         _retrieval_service = RetrievalGraderBridge(
             retriever=_hybrid,
+            grader=RetrievalGrader(settings.retrieval_grader_threshold),
             use_rewrite=True,
         )
     finally:
