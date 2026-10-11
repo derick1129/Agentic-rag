@@ -40,3 +40,27 @@ def test_explicit_cross_tenant_predicate_cannot_escape_server_scope():
     ).with_tenant("acme")
     assert "GLOBEX" in result.sql.upper()
     assert result.params["__tenant_id"] == "acme"
+
+
+def test_adds_tenant_scope_to_each_nested_query_block():
+    result = validate_sql(
+        "SELECT o.id FROM public.orders AS o "
+        "WHERE EXISTS (SELECT 1 FROM public.items AS i WHERE i.order_id = o.id)",
+        {"public"},
+        100,
+    ).with_tenant("acme")
+
+    assert result.sql.lower().count("tenant_id") == 2
+    assert "o.tenant_id = 'acme'" in result.sql.lower()
+    assert "i.tenant_id = 'acme'" in result.sql.lower()
+
+
+def test_scopes_cte_source_and_ignores_cte_reference_as_a_physical_table():
+    result = validate_sql(
+        "WITH recent AS (SELECT id FROM public.orders) SELECT id FROM recent",
+        {"public"},
+        100,
+    ).with_tenant("acme")
+
+    assert result.sql.lower().count("tenant_id") == 1
+    assert "orders.tenant_id = 'acme'" in result.sql.lower()

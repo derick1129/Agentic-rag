@@ -28,7 +28,7 @@ class RetrievalGraderResult:
     bm25_score: float | None = None
     reranker_score: float | None = None
     score: float = 0.0
-    grade_threshold: float = 0.05
+    grade_threshold: float | None = None
 
 
 # Spec alias
@@ -49,9 +49,9 @@ class RetrievalGraderDiagnostics(RetrievalDiagnostics):
 
 
 class RetrievalGrader:
-    """Deterministic score-margin gate between BM25 top-1 and reranked top-1."""
+    """Optional score-margin gate, disabled until scores are calibrated."""
 
-    def __init__(self, grade_threshold: float = 0.05) -> None:
+    def __init__(self, grade_threshold: float | None = None) -> None:
         self.grade_threshold = grade_threshold
 
     def assess(
@@ -93,6 +93,16 @@ class RetrievalGrader:
         bm25_score = float(bm25_top1.score)
         reranker_score = float(reranked_top1.score)
         margin = round(reranker_score - bm25_score, 6)
+
+        if self.grade_threshold is None:
+            return RetrievalGraderResult(
+                accept=True,
+                reason="uncalibrated_scores",
+                bm25_score=bm25_score,
+                reranker_score=reranker_score,
+                score=margin,
+                grade_threshold=None,
+            )
 
         if margin >= self.grade_threshold:
             return RetrievalGraderResult(

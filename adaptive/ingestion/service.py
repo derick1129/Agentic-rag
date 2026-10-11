@@ -133,6 +133,10 @@ class IngestionService:
             return job
         path = self._sources.get(job.id)
         try:
+            if self.session is not None:
+                from adaptive.db.session import set_tenant_context
+
+                set_tenant_context(self.session, job.tenant_id)
             retrying = job.status == IngestionStatus.FAILED
             if retrying:
                 # Re-run the deterministic pipeline from parsing; attempts and diagnostics persist.

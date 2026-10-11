@@ -60,9 +60,11 @@ class BM25Stage(RetrievalStage):
             # Load chunks for this tenant from the database
             session = self.session_factory()
             try:
+                from adaptive.db.session import set_tenant_context
                 # We need to import the Chunk model from the database
                 from adaptive.db.models import Chunk as ChunkModel
 
+                set_tenant_context(session, tenant_id)
                 chunks_orm = (
                     session.query(ChunkModel)
                     .filter(ChunkModel.tenant_id == tenant_id)

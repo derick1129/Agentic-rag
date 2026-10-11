@@ -24,11 +24,13 @@ from adaptive.api.schemas import (
 )
 from adaptive.config import get_settings
 from adaptive.db.session import SessionLocal
-from adaptive.interfaces import CacheEntry, CacheLookup, RequestContext, RouteDepth, RouteTool
+from adaptive.interfaces import CacheEntry, CacheLookup, GuardrailAction, RequestContext, RouteDepth, RouteTool
+from adaptive.guardrails.runner import GuardrailRunner
 from adaptive.ingestion.service import IngestionService
 from adaptive.observability.attributes import TelemetryConfig
 from adaptive.observability.tracing import configure_telemetry
 from adaptive.retrieval.hybrid import HybridRetrieverService
+from adaptive.retrieval.retrieval_grader import RetrievalGrader, RetrievalGraderBridge
 from adaptive.retrieval.contracts import HashEmbeddingProvider
 from adaptive.cache.redis import RedisCacheStore
 from adaptive.cache.service import SemanticCacheService
@@ -224,10 +226,15 @@ async def lifespan(app: FastAPI):
                 logger.warning("RETRIEVAL_RERANK_ENABLED is true but NIMS_API_KEY is not set; disabling reranking")
                 reranker = None
         
-        _retrieval_service = HybridRetrieverService(
+        _hybrid = HybridRetrieverService(
             bm25=_bm25_stage,
             dense=dense_stage,
             reranker=reranker,
+        )
+        _retrieval_service = RetrievalGraderBridge(
+            retriever=_hybrid,
+            grader=RetrievalGrader(settings.retrieval_grader_threshold),
+            use_rewrite=True,
         )
     finally:
         session.close()
@@ -477,9 +484,19 @@ def create_app() -> FastAPI:
                 "metadata": getattr(chunk, 'metadata', {}),
             })
         
+        # Collect retrieval grader diagnostics
+        diag_dict: dict[str, Any] = {}
+        grader_diag = getattr(result, "diagnostics", None)
+        if grader_diag is not None:
+            if hasattr(grader_diag, "__dict__"):
+                diag_dict.update({k: v for k, v in grader_diag.__dict__.items() if not k.startswith("_")})
+            elif isinstance(grader_diag, dict):
+                diag_dict.update(grader_diag)
+
         # 3. Answer Generation & Cache Put
         answer_text: str | None = None
         citations: list[dict[str, Any]] | None = None
+        groundedness_status: str | None = None
         if request.generate and _generation_provider and results:
             try:
                 passages = "\n\n".join(
@@ -498,6 +515,20 @@ def create_app() -> FastAPI:
                     {"citation_index": i + 1, "document_id": r.get("document_id"), "chunk_id": r["id"]}
                     for i, r in enumerate(results[:5])
                 ]
+
+                # Post-generation NLI validation
+                guardrail_runner = GuardrailRunner()
+                nli_check = await guardrail_runner.check_post_generation(
+                    answer=answer_text,
+                    evidence=result.chunks,
+                    context=context,
+                    citations=citations,
+                )
+                if nli_check.details:
+                    groundedness_status = nli_check.details.get("status")
+                    diag_dict["post_generation_nli"] = nli_check.details
+                if nli_check.action == GuardrailAction.DENY:
+                    diag_dict["nli_blocked"] = True
                 
                 # Store in semantic cache if enabled
                 if _cache_service is not None and query_embedding is not None and answer_text:
@@ -533,7 +564,10 @@ def create_app() -> FastAPI:
             answer=answer_text,
             citations=citations,
             cache_status="miss" if _cache_service is not None else "bypass",
+            groundedness_status=groundedness_status,
+            diagnostics=diag_dict or None,
         )
+
     
     # Mount static files for the frontend dashboard
     app.mount("/static", StaticFiles(directory="adaptive/api/static"), name="static")

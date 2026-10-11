@@ -1,7 +1,7 @@
-"""Post-generation Natural Language Inference (NLI) validator.
+"""Post-generation claim-to-evidence checker.
 
-Verifies that synthesized answers are grounded in cited evidence chunks
-and identifies unsupported or hallucinated claims.
+The default implementation uses token overlap as a heuristic. An injected
+provider can perform actual natural language inference.
 """
 
 from __future__ import annotations
@@ -111,7 +111,7 @@ def _extract_chunk_dicts(items: Iterable[Any]) -> list[dict[str, Any]]:
 
 
 class NLIValidator:
-    """Deterministic post-generation NLI / entailment validator."""
+    """Claim checker; uses overlap heuristics unless an NLI provider is injected."""
 
     def __init__(
         self,
@@ -307,6 +307,7 @@ class NLIValidator:
     ) -> NLIResult:
         span_attributes: dict[str, Any] = {
             "answer.nli.status": status,
+            "answer.nli.method": "provider" if self.provider is not None else "heuristic_overlap",
             "answer.nli.claim_violations_count": len(claim_violations),
             "answer.nli.evidence_coverage": coverage,
         }

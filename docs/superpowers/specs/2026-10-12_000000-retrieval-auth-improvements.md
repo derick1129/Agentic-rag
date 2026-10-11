@@ -1,6 +1,6 @@
 # Retrieval Grader, Post-Generation NLI Validator, JWT Auth, Input Sanitization & Read-Only Roles Spec
 
-**Status:** Draft for implementation planning
+**Status:** Implemented in PRs #1 and #2; follow-up hardening is tracked in the repo review
 **Created:** 2026-10-12
 **Depends on:** `docs/superpowers/plans/2026-10-12_000000-retrieval-auth-improvements.md`, `docs/superpowers/specs/2026-08-29-adaptive-agentic-rag-v1-design.md`
 
@@ -50,7 +50,7 @@ QUERY TIME
   ▼
 [ Retrieval ]
   ├── BM25 + Dense → ACL filter → RRF → cross-encoder reranker
-  ├── retrieval_grader: cosine(rerank_top-1, bm25_top-1) >= grade_threshold
+  ├── retrieval_grader: optional score-margin gate, enabled only after score calibration
   ├── query_rewrite (LLM)  ← only if grader rejects
   └── retrieval_grader gate → HybridRetrieverService.retrieve
   │
@@ -75,7 +75,7 @@ QUERY TIME
 - `adaptive/retrieval/retrieval_grader.py`
 - Input: `query_text`, `bm25_top1`, `reranked_top1`, `query_embedding`, `grade_threshold`.
 - Output: `GraderResult(accept: bool, reason: str, score: float, grade_threshold: float)`.
-- Logic: accept only when `reranker_score - bm25_score >= grade_threshold`. This is a score-margin gate, not an absolute threshold, so it adapts to query difficulty.
+- Logic: accept only when `reranker_score - bm25_score >= grade_threshold`, but only when a threshold calibrated on a labeled evaluation set is configured. BM25 and reranker scores are not presumed comparable. With no configured threshold, accept the existing ranked result and do not trigger a rewrite based on the score margin.
 - Reasons: `reranker_outperformed`, `reranker_not_better`, `no_reranker_available`, `insufficient_candidates`.
 - Must be synchronous/deterministic; no network calls.
 
@@ -103,7 +103,7 @@ QUERY TIME
   1. If citations are empty → `refused` with reason `no_citations`.
   2. Reject empty/blocked citations for chunks that are deleted, replaced, or from a different tenant.
   3. Slice each claim into simple deterministic claims; do not use a model by default.
-  4. Match each claim against evidence chunks via token/keyword overlap. A provider interface is included for real NLI but is injected, never the default.
+  4. The default implementation uses token/keyword overlap and is a heuristic, not an NLI model. A provider interface allows a real entailment checker to be injected. Results report the method used in `answer.nli.method`.
   5. No claim has a matching evidence chunk → `ungrounded`.
   6. Most claims covered → `grounded`; otherwise `partial`.
   7. Fail closed: empty/blocked evidence defaults to `ungrounded`.

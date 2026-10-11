@@ -4,7 +4,7 @@
 
 **Goal:** Add a retrieval-quality gate with query rewrite, a post-generation NLI/entailment validator, JWT-based authentication, input sanitization + system prompt hardening, and read-only database roles — without touching the unrelated pipelines.
 
-**Architecture:** Extend the retrieval pipeline with a deterministic grader that scores BM25 vs. reranked top-1 and gates on a learned confidence margin; move the end-to-end retrieval into a retriever that is self-contained in `adaptive/retrieval/`; on gate rejection, rewrite the query once and retry dense retrieval only. After synthesis, run a post-generation NLI validator against cited chunks. Replace the header-only tenant injection with a JWT/OIDC boundary that produces the existing frozen `RequestContext`. Sanitize and frame retrieved/web content as data, and harden internal system prompts so they cannot be modified by user text. Enforce read-only database roles and tenant-scoped row-level security at the DB level.
+**Architecture:** Extend the retrieval pipeline with a deterministic grader that scores BM25 vs. reranked top-1. The margin gate stays disabled until a threshold is calibrated on a labeled evaluation set; once enabled, rejection triggers one query rewrite and dense retry. After synthesis, run a post-generation claim check against cited chunks. Its default implementation is token overlap, so its result is labeled as a heuristic rather than model-based NLI. Replace header-only tenant injection with a JWT boundary that produces the existing frozen `RequestContext`. Sanitize and frame retrieved/web content as data, and enforce read-only SQL access plus tenant-scoped RLS at the database level.
 
 **Tech Stack:** Python 3.11+, uv, FastAPI, Pydantic v2, SQLAlchemy, sqlglot (already present), httpx (already present), PyJWT. No new package installs. Deterministic fakes for CI so all tests pass with none of the external model credentials.
 
@@ -25,7 +25,7 @@
 **Step 1: Write failing tests for `RetrievalGrader`**
 ```python
 def test_returns_accept_when_reranker_better_than_bm25():
-    grader = RetrievalGrader(grade_threshold=0.05)
+    grader = RetrievalGrader(grade_threshold=0.05)  # Configure only after labeled evaluation.
     result = grader.assess(
         query="refund policy",
         bm25_top1=ScoredChunk(chunk=Chunk(id="b1", tenant_id="acme", acl=frozenset({"public"}), text="30-day refund"), score=0.7),
@@ -42,8 +42,8 @@ uv run pytest tests/retrieval/test_grader.py -q
 Expected: FAIL (imports missing).
 
 **Step 3: Implement `RetrievalGrader`**
-- Compute a calibrated score margin: `reranker_score - bm25_score`.
-- Accept only when margin `>= grade_threshold` (default `0.05`).
+- Compute the score margin: `reranker_score - bm25_score`.
+- Keep the gate disabled by default. Enable a threshold only after calibration on a labeled evaluation set; no universal default is assumed.
 - Reasons: `reranker_outperformed`, `reranker_not_better`, `no_reranker_available`, `insufficient_candidates`.
 - Synchronous, deterministic, no network calls.
 
