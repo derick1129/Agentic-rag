@@ -6,9 +6,9 @@ import logging
 import os
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Engine, create_engine, event
+from sqlalchemy import Engine, create_engine, event, text
 from sqlalchemy.exc import OperationalError
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -18,6 +18,35 @@ if TYPE_CHECKING:
 from adaptive.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+
+def apply_tenant_context(connection: object, tenant_id: str) -> None:
+    """Set the transaction-local tenant used by PostgreSQL RLS policies."""
+    if not tenant_id or not tenant_id.strip():
+        raise ValueError("tenant_id must be a non-empty string")
+    if getattr(getattr(connection, "dialect", None), "name", None) != "postgresql":
+        return
+    connection.execute(  # type: ignore[attr-defined]
+        text("SELECT set_config('app.current_tenant_id', :tenant_id, true)"),
+        {"tenant_id": tenant_id.strip()},
+    )
+
+
+@event.listens_for(Session, "after_begin")
+def _apply_session_tenant_context(session: Session, transaction: object, connection: object) -> None:
+    """Restore the session's tenant after each transaction begins."""
+    tenant_id = session.info.get("tenant_id")
+    if tenant_id:
+        apply_tenant_context(connection, tenant_id)
+
+
+def set_tenant_context(session: Session, tenant_id: str) -> None:
+    """Bind a SQLAlchemy session to a tenant for its current and later transactions."""
+    if not tenant_id or not tenant_id.strip():
+        raise ValueError("tenant_id must be a non-empty string")
+    session.info["tenant_id"] = tenant_id.strip()
+    if session.in_transaction():
+        apply_tenant_context(session.connection(), tenant_id)
 
 _DISALLOWED_PREFIXES = frozenset(
     {
