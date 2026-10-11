@@ -131,6 +131,10 @@ class IngestionService:
             raise LookupError("ingestion job not found")  # noqa: TRY003
         if job.status == IngestionStatus.ACTIVE:
             return job
+        if self.session is not None:
+            from adaptive.db.session import set_tenant_context
+
+            set_tenant_context(self.session, job.tenant_id)
         path = self._sources.get(job.id)
         try:
             retrying = job.status == IngestionStatus.FAILED

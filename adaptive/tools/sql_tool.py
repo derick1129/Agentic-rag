@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import Engine, text
 
-from adaptive.db.session import read_only_engine
+from adaptive.db.session import apply_tenant_context, read_only_engine
 from adaptive.interfaces import RouteTool, ToolContext, ToolResult, ToolStatus
 from adaptive.tools.sql_validate import SQLValidationError, validate_sql
 
@@ -59,11 +59,12 @@ class SqlTool:
             if hasattr(self.executor, "set_statement_timeout"):
                 await self._maybe(self.executor.set_statement_timeout(self.statement_timeout_ms))
             if isinstance(self.executor, Engine):
-                with self.executor.connect() as conn:
+                with self.executor.begin() as conn:
                     if conn.dialect.name == "postgresql":
                         conn.execute(
                             text(f"SET LOCAL statement_timeout = {int(self.statement_timeout_ms)}")
                         )
+                    apply_tenant_context(conn, context.request_context.tenant_id)
                     res = conn.execute(text(validated.sql), validated.params)
                     rows = [dict(m) for m in res.mappings().all()]
             elif hasattr(self.executor, "execute"):

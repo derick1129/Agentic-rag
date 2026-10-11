@@ -44,6 +44,9 @@ class NeonDBDenseStage(RetrievalStage):
     async def search(self, query: RetrievalQuery, limit: int) -> List[ScoredChunk]:
         session = self.session_factory()
         try:
+            from adaptive.db.session import set_tenant_context
+
+            set_tenant_context(session, query.context.tenant_id)
             # Compute the query embedding
             query_embedding_list = await _maybe_await(self.embedding_provider.embed([query.text], input_type="query"))
             query_embedding = query_embedding_list[0]
