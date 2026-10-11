@@ -183,6 +183,10 @@ class Settings(BaseSettings):
     auth_dev_tenant_id: str = Field(default="acme", alias="AUTH_DEV_TENANT_ID")
     auth_dev_subject_id: str = Field(default="user-1", alias="AUTH_DEV_SUBJECT_ID")
     auth_dev_acl: str = Field(default="support,admin", alias="AUTH_DEV_ACL")
+    auth_jwt_secret: str = Field(default="dev-secret", alias="AUTH_JWT_SECRET")
+    auth_jwt_algorithm: str = Field(default="HS256", alias="AUTH_JWT_ALGORITHM")
+    auth_jwt_audience: str = Field(default="adaptive-rag", alias="AUTH_JWT_AUDIENCE")
+    auth_jwt_issuer: str = Field(default="adaptive-rag-idp", alias="AUTH_JWT_ISSUER")
 
     @property
     def auth_dev_acl_set(self) -> frozenset[str]:
