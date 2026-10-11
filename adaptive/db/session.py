@@ -13,8 +13,6 @@ from sqlalchemy.orm import Session, sessionmaker
 if TYPE_CHECKING:
     from collections.abc import Generator
 
-    from sqlalchemy.orm import Session
-
 from adaptive.config import get_settings
 
 logger = logging.getLogger(__name__)
