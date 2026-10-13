@@ -30,12 +30,13 @@ from adaptive.cache.service import SemanticCacheService
 from adaptive.config import Settings, get_settings
 from adaptive.db.session import SessionLocal
 from adaptive.guardrails.runner import GuardrailRunner
-from adaptive.ingestion.models import IngestionJob, SourcePayload
+from adaptive.ingestion.models import SourcePayload
 from adaptive.ingestion.service import IngestionService
 from adaptive.interfaces import (
     CacheEntry,
     CacheLookup,
     GuardrailAction,
+    IngestionJob,
     RequestContext,
     RetrievalQuery,
     RetrievalResult,
@@ -281,9 +282,7 @@ def _init_ingestion_and_retrieval(
 async def _shutdown_services() -> None:
     if _redis_client is not None:
         try:
-            close_result = _redis_client.close()
-            if inspect.isawaitable(close_result):
-                await close_result
+            _redis_client.close()
         except Exception:
             logger.debug("Error closing Redis client during shutdown", exc_info=True)
 

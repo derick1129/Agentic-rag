@@ -81,7 +81,7 @@ def _doc_to_entry_dict(doc: object) -> dict[str, Any]:
 
 
 def _matches_lookup(entry_dict: dict[str, Any], request: CacheLookup) -> bool:
-    return (
+    return bool(
         entry_dict["tenant_id"] == request.context.tenant_id
         and frozenset(request.context.acl) == entry_dict["acl"]
         and entry_dict["model_profile"] == request.model_profile

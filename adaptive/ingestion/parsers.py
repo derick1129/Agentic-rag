@@ -48,7 +48,8 @@ class MarkdownParser(BaseParser):
             {"level": len(match.group(1)), "text": match.group(2).strip()}
             for match in re.finditer(r"(?m)^(#{1,6})[ \t]+(.+?)\s*$", text)
         ]
-        title = headings[0]["text"] if headings and headings[0]["level"] == 1 else None
+        title_val = headings[0]["text"] if headings and headings[0]["level"] == 1 else None
+        title = str(title_val) if title_val is not None else None
         return ParsedDocument(title=title, text=text, headings=headings)
 
 

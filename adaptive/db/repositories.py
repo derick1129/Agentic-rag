@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
 if TYPE_CHECKING:
-    from sqlalchemy.orm import Session
+    from sqlalchemy.engine.cursor import CursorResult
+    from sqlalchemy.orm import InstrumentedAttribute, Session
     from sqlalchemy.sql.elements import ColumnElement
 
 from adaptive.db.models import (
@@ -41,12 +42,17 @@ from adaptive.interfaces import (
     ChunkDraft,
     Document,
     DocumentCreateParams,
+    DocumentStatus,
     IngestionJob,
+    IngestionStatus,
     RequestContext,
 )
 
 
-def _scope(context: RequestContext, tenant_column: ColumnElement[str]) -> ColumnElement[bool]:
+def _scope(
+    context: RequestContext,
+    tenant_column: ColumnElement[Any] | InstrumentedAttribute[Any],
+) -> ColumnElement[bool]:
     return tenant_column == context.tenant_id
 
 
@@ -199,7 +205,7 @@ class DocumentRepository:
             canonical_text=model.canonical_text,
             metadata=model.metadata_json,
             acl=frozenset(model.acl),
-            status=model.status,
+            status=DocumentStatus(model.status),
             created_at=model.created_at,
             updated_at=model.updated_at,
         )
@@ -266,7 +272,9 @@ class ChunkRepository:
     def __init__(self, session: Session):
         self.session = session
 
-    def bulk_create(self, chunks: list[ChunkDraft], embeddings: list[list[float]] | None = None):
+    def bulk_create(
+        self, chunks: list[ChunkDraft], embeddings: list[list[float]] | None = None
+    ) -> list[ChunkModel]:
         models = []
         for i, chunk in enumerate(chunks):
             embedding = embeddings[i] if embeddings and i < len(embeddings) else None
@@ -294,7 +302,7 @@ class ChunkRepository:
 
     def get_by_document(
         self, document_id: str, version: int, context: RequestContext | None = None
-    ):
+    ) -> list[ChunkModel]:
         query = select(ChunkModel).where(
             ChunkModel.document_id == document_id, ChunkModel.version == version
         )
@@ -312,7 +320,8 @@ class ChunkRepository:
             query = query.where(_scope(context, ChunkModel.tenant_id))
         result = self.session.execute(query)
         self.session.flush()
-        return result.rowcount
+        cursor_result = cast("CursorResult[Any]", result)
+        return int(cursor_result.rowcount)
 
 
 class IngestionJobRepository:
@@ -361,7 +370,7 @@ class IngestionJobRepository:
             id=model.id,
             tenant_id=model.tenant_id,
             document_id=model.document_id,
-            status=model.status,
+            status=IngestionStatus(model.status),
             current_stage=model.current_stage,
             attempts=model.attempts,
             error_code=model.error_code,

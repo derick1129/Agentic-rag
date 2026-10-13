@@ -170,6 +170,13 @@ class TraceManager:
     ) -> QueryTrace:
         return QueryTrace(self, context, query, model_profile)
 
+    def shutdown(self) -> None:
+        if hasattr(self.provider, "shutdown"):
+            self.provider.shutdown()
+
+    def stop(self) -> None:
+        self.shutdown()
+
 
 def configure_telemetry(config: TelemetryConfig | None = None) -> TraceManager:
     """Create an OTLP/Phoenix-capable manager without requiring Phoenix credentials."""

@@ -5,7 +5,7 @@ from __future__ import annotations
 from threading import Lock
 from typing import TYPE_CHECKING
 
-from rank_bm25 import BM25Okapi
+from rank_bm25 import BM25Okapi  # type: ignore[import-untyped]
 
 from adaptive.db.models import Chunk as ChunkModel
 from adaptive.db.session import set_tenant_context
