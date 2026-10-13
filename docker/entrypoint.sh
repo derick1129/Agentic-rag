@@ -14,4 +14,8 @@ while ! alembic upgrade head; do
     sleep "${MIGRATION_RETRY_SECONDS:-2}"
 done
 
+if [ "$#" -gt 0 ]; then
+    exec "$@"
+fi
+
 exec uvicorn adaptive.api.main:app --host "${APP_HOST:-0.0.0.0}" --port "${APP_PORT:-8000}"
