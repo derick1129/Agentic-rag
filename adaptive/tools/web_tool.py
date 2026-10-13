@@ -6,12 +6,15 @@ import asyncio
 import inspect
 import ipaddress
 import time
-from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 
 from adaptive.interfaces import RouteTool, ToolContext, ToolResult, ToolStatus
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 
 class WebTool:
@@ -84,7 +87,7 @@ class WebTool:
                     latency_ms=int((time.monotonic() - started) * 1000),
                     diagnostics={"untrusted_content": True},
                 )
-            except (asyncio.TimeoutError, TimeoutError):
+            except TimeoutError:
                 if attempt == self.max_retries:
                     return ToolResult(
                         tool=self.tool_type,

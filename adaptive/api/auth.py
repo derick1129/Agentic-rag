@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
 import warnings
 
 from fastapi import Depends, Header, HTTPException, Request, status
 import jwt
+from fastapi import Header, HTTPException, Request, status
 from jwt.exceptions import (
     ExpiredSignatureError,
     ImmatureSignatureError,
@@ -21,6 +21,9 @@ from adaptive.interfaces import RequestContext
 
 logger = logging.getLogger(__name__)
 
+_BEARER_HEADER_PARTS = 2
+_DEV_PLACEHOLDER_TOKENS = frozenset({"dev-jwt"})
+
 
 def _extract_bearer_token(request: Request, auth_mode: str) -> str | None:
     """Extract Bearer token from Authorization header if present."""
@@ -29,7 +32,7 @@ def _extract_bearer_token(request: Request, auth_mode: str) -> str | None:
         return None
 
     parts = auth_header.strip().split()
-    if len(parts) == 2 and parts[0].lower() == "bearer":
+    if len(parts) == _BEARER_HEADER_PARTS and parts[0].lower() == "bearer":
         return parts[1]
 
     if auth_mode == "production":
@@ -40,7 +43,7 @@ def _extract_bearer_token(request: Request, auth_mode: str) -> str | None:
     return None
 
 
-def _parse_acl_claim(acl_claim: Any, default_acl: frozenset[str]) -> frozenset[str]:
+def _parse_acl_claim(acl_claim: object, default_acl: frozenset[str]) -> frozenset[str]:
     """Parse ACL claim into a frozen set of strings."""
     if acl_claim is None:
         return default_acl
@@ -54,7 +57,7 @@ def _parse_acl_claim(acl_claim: Any, default_acl: frozenset[str]) -> frozenset[s
 def _authenticate_development(token: str | None, settings: Settings) -> RequestContext:
     """Authenticate request in development mode."""
     # If no token provided or static dev token, return dev defaults
-    if not token or token == "dev-jwt":
+    if not token or token in _DEV_PLACEHOLDER_TOKENS:
         return RequestContext(
             tenant_id=settings.auth_dev_tenant_id,
             subject_id=settings.auth_dev_subject_id,
@@ -70,7 +73,9 @@ def _authenticate_development(token: str | None, settings: Settings) -> RequestC
             options={"verify_signature": False},
         )
         tenant_id = str(payload.get("tenant_id") or settings.auth_dev_tenant_id).strip()
-        subject_id = str(payload.get("sub") or payload.get("subject_id") or settings.auth_dev_subject_id).strip()
+        subject_id = str(
+            payload.get("sub") or payload.get("subject_id") or settings.auth_dev_subject_id
+        ).strip()
         acl = _parse_acl_claim(payload.get("acl"), settings.auth_dev_acl_set)
         return RequestContext(tenant_id=tenant_id, subject_id=subject_id, acl=acl)
     except Exception:
@@ -175,19 +180,18 @@ def authenticate_request(
 
     if settings.auth_mode == "development":
         return _authenticate_development(token, settings)
-    elif settings.auth_mode == "production":
+    if settings.auth_mode == "production":
         return _authenticate_production(token, settings)
-    else:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Unknown auth_mode: {settings.auth_mode}",
-        )
+    raise HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail=f"Unknown auth_mode: {settings.auth_mode}",
+    )
 
 
 async def get_request_context(
-    x_tenant_id: Optional[str] = Header(None),
-    x_subject_id: Optional[str] = Header(None),
-    x_acl: Optional[str] = Header(None),
+    x_tenant_id: str | None = Header(None),
+    x_subject_id: str | None = Header(None),
+    x_acl: str | None = Header(None),
     settings: Settings | None = None,
 ) -> RequestContext:
     """Extract request context from headers.
@@ -226,6 +230,5 @@ async def get_request_context(
     )
 
 
-async def verify_api_key(x_api_key: Optional[str] = Header(None)):
+async def verify_api_key(x_api_key: str | None = Header(None)) -> None:
     """Verify API key if required."""
-    pass

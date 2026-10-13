@@ -3,15 +3,26 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Protocol
 
-from adaptive.interfaces import RetrievalQuery, RouteTool, ToolContext, ToolResult, ToolStatus
+from adaptive.interfaces import (
+    RetrievalQuery,
+    RetrievalResult,
+    RouteTool,
+    ToolContext,
+    ToolResult,
+    ToolStatus,
+)
+
+
+class _VectorRetriever(Protocol):
+    async def retrieve(self, query: RetrievalQuery) -> RetrievalResult: ...
 
 
 class VectorTool:
     tool_type = RouteTool.VECTOR
 
-    def __init__(self, retriever: Any) -> None:
+    def __init__(self, retriever: _VectorRetriever) -> None:
         self.retriever = retriever
 
     async def run(self, context: ToolContext) -> ToolResult:

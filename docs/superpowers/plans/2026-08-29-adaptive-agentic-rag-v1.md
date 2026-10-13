@@ -81,6 +81,7 @@ def test_request_context_carries_server_scope():
     assert context.tenant_id == "acme"
     assert "support" in context.acl
 
+
 def test_budget_stops_after_any_limit():
     budget = Budget(max_usd=0.01, max_tokens=100, max_steps=2)
     budget.charge(tokens=101, cost_usd=0.0)
@@ -115,6 +116,7 @@ def test_document_repository_cannot_read_another_tenant(session):
     repo.create(tenant_id="acme", filename="a.md", content_hash="hash-a")
     repo.create(tenant_id="globex", filename="b.md", content_hash="hash-b")
     assert [d.tenant_id for d in repo.list_active(RequestContext(tenant_id="acme"))] == ["acme"]
+
 
 def test_active_version_is_unique_per_document(session):
     repo = DocumentRepository(session)
@@ -221,9 +223,7 @@ def test_chunk_ids_are_stable_for_same_document_version():
 
 ```python
 def test_hybrid_retriever_fuses_and_acl_filters_results():
-    result = retriever.retrieve(
-        RetrievalQuery(text="refund policy", context=acme_context)
-    )
+    result = retriever.retrieve(RetrievalQuery(text="refund policy", context=acme_context))
     assert [chunk.id for chunk in result.chunks] == ["acme-visible"]
     assert result.diagnostics.bm25_count == 2
     assert result.diagnostics.dense_count == 2

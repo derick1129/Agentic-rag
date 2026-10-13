@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import TYPE_CHECKING
 
 from adaptive.graph.agent_subgraph import AgentDeps, run_agent
 from adaptive.interfaces import (
     AgentState,
     Answer,
+    Budget,
     CacheStatus,
+    RequestContext,
+    RouteDecision,
     RouteTool,
+    Tool,
     ToolContext,
     ToolResult,
     ToolStatus,
@@ -18,15 +22,21 @@ from adaptive.interfaces import (
 from adaptive.tools.parametric_tool import ParametricTool
 from adaptive.tools.vector_tool import VectorTool
 
+if TYPE_CHECKING:
+    from adaptive.graph.build import GraphDeps
+
+_MISSING_MULTI_HOP_ANSWER = "multi-hop graph ended without an answer"
+
 
 async def execute_direct(
     query: str,
-    tool: Any,
-    route: Any,
-    context: Any,
-    budget: Any,
-    evidence: list[ToolResult] | None = None,
+    tool: Tool,
+    route: RouteDecision,
+    context: RequestContext,
+    budget: Budget,
+    **options: list[ToolResult] | None,
 ) -> Answer:
+    evidence = options.get("evidence")
     tool_context = ToolContext(
         request_context=context,
         budget=budget,
@@ -55,10 +65,10 @@ async def execute_direct(
 
 async def execute_multi_hop(
     query: str,
-    route: Any,
-    context: Any,
-    budget: Any,
-    deps: Any,
+    route: RouteDecision,
+    context: RequestContext,
+    budget: Budget,
+    deps: GraphDeps,
 ) -> Answer:
     state = AgentState(
         query=query,
@@ -71,22 +81,26 @@ async def execute_multi_hop(
         ),
         route_decision=route,
     )
-    result = await run_agent(state, AgentDeps(
-        tools=deps.tools,
-        generator=deps.generator,
-        policy=deps.agent_policy,
-        evidence_checker=deps.evidence_checker,
-        synthesizer=deps.synthesizer,
-        guardrail_runner=deps.guardrail_runner,
-    ))
+    result = await run_agent(
+        state,
+        AgentDeps(
+            tools=deps.tools,
+            generator=deps.generator,
+            policy=deps.agent_policy,
+            evidence_checker=deps.evidence_checker,
+            synthesizer=deps.synthesizer,
+            guardrail_runner=deps.guardrail_runner,
+        ),
+    )
     if result.answer is None:
-        raise RuntimeError("multi-hop graph ended without an answer")
+        raise RuntimeError(_MISSING_MULTI_HOP_ANSWER)
     return result.answer
 
 
-def default_tool(tool: RouteTool, deps: Any) -> Any:
+def default_tool(tool: RouteTool, deps: GraphDeps) -> Tool | None:
     if tool in deps.tools:
-        return deps.tools[tool]
+        selected: Tool = deps.tools[tool]
+        return selected
     if tool is RouteTool.PARAMETRIC:
         return ParametricTool(deps.generator)
     if tool is RouteTool.VECTOR:

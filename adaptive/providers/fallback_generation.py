@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any, Type
+from typing import TYPE_CHECKING
 
 from adaptive.interfaces import Generator
 
+if TYPE_CHECKING:
+    from pydantic import BaseModel
+
 
 class FallbackGenerationProvider(Generator):
-    """Generation provider that tries a primary provider, then falls back to a secondary provider."""
+    """Generation provider that tries a primary provider, then falls back to a secondary one."""
 
     def __init__(
         self,
@@ -26,7 +29,7 @@ class FallbackGenerationProvider(Generator):
             return await self.fallback.generate(prompt, max_tokens, temperature)
 
     async def generate_structured(
-        self, prompt: str, schema: Type[BaseModel], max_tokens: int
+        self, prompt: str, schema: type[BaseModel], max_tokens: int
     ) -> BaseModel:
         try:
             return await self.primary.generate_structured(prompt, schema, max_tokens)

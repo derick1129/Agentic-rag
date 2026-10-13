@@ -18,10 +18,17 @@ from adaptive.config import get_settings
 logger = logging.getLogger(__name__)
 
 
+class EmptyTenantIdError(ValueError):
+    """Raised when an empty tenant_id is supplied to database session helpers."""
+
+    def __init__(self) -> None:
+        super().__init__("tenant_id must be a non-empty string")
+
+
 def apply_tenant_context(connection: object, tenant_id: str) -> None:
     """Set the transaction-local tenant used by PostgreSQL RLS policies."""
     if not tenant_id or not tenant_id.strip():
-        raise ValueError("tenant_id must be a non-empty string")
+        raise EmptyTenantIdError
     if getattr(getattr(connection, "dialect", None), "name", None) != "postgresql":
         return
     connection.execute(  # type: ignore[attr-defined]
@@ -31,7 +38,9 @@ def apply_tenant_context(connection: object, tenant_id: str) -> None:
 
 
 @event.listens_for(Session, "after_begin")
-def _apply_session_tenant_context(session: Session, transaction: object, connection: object) -> None:
+def _apply_session_tenant_context(
+    session: Session, transaction: object, connection: object
+) -> None:
     """Restore the session's tenant after each transaction begins."""
     tenant_id = session.info.get("tenant_id")
     if tenant_id:
@@ -41,10 +50,11 @@ def _apply_session_tenant_context(session: Session, transaction: object, connect
 def set_tenant_context(session: Session, tenant_id: str) -> None:
     """Bind a SQLAlchemy session to a tenant for its current and later transactions."""
     if not tenant_id or not tenant_id.strip():
-        raise ValueError("tenant_id must be a non-empty string")
+        raise EmptyTenantIdError
     session.info["tenant_id"] = tenant_id.strip()
     if session.in_transaction():
         apply_tenant_context(session.connection(), tenant_id)
+
 
 _DISALLOWED_PREFIXES = frozenset(
     {
@@ -166,5 +176,3 @@ def get_session() -> Generator[Session, None, None]:
         yield session
     finally:
         session.close()
-
-

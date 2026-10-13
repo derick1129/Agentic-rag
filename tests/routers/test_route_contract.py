@@ -1,12 +1,18 @@
 import pytest
 from pydantic import BaseModel
 
-from adaptive.interfaces import Budget, RequestContext, RouteDepth, RouteSource, RouteTool
+from adaptive.interfaces import (
+    Budget,
+    RequestContext,
+    RouteDecision,
+    RouteDepth,
+    RouteSource,
+    RouteTool,
+)
 from adaptive.routers.contracts import QueryContext, RoutingPolicy
 from adaptive.routers.embedding_router import EmbeddingRouter
 from adaptive.routers.escalation import apply_escalation
 from adaptive.routers.llm_router import LLMRouter, RouteModelOutput
-from adaptive.interfaces import RouteDecision
 
 
 def context(query: str = "question") -> QueryContext:
@@ -25,6 +31,11 @@ class FixedGenerator:
         if isinstance(self.value, BaseModel):
             return self.value
         return self.value
+
+
+class FixedEmbedder:
+    async def embed(self, texts: list[str], *, input_type: str | None = None) -> list[list[float]]:
+        return await _embedding(texts, input_type=input_type)
 
 
 @pytest.mark.asyncio
@@ -53,19 +64,21 @@ async def test_invalid_llm_output_escalates_to_safe_multi_hop():
 @pytest.mark.asyncio
 async def test_embedding_router_uses_nearest_seed():
     router = EmbeddingRouter(
-        embedder=type("Embedder", (), {"embed": lambda self, texts: _embedding(texts)})(),
+        embedder=FixedEmbedder(),
         seeds={
             "math": (RouteDepth.PARAMETRIC, RouteTool.PARAMETRIC, [1.0, 0.0]),
             "docs": (RouteDepth.SINGLE_HOP, RouteTool.VECTOR, [0.0, 1.0]),
         },
     )
     decision = await router.route(context("docs"))
+    assert decision.depth is RouteDepth.SINGLE_HOP
     assert decision.tool is RouteTool.VECTOR
     assert decision.source is RouteSource.EMBEDDING
     assert decision.confidence == 1.0
 
 
-async def _embedding(texts: list[str]) -> list[list[float]]:
+async def _embedding(texts: list[str], *, input_type: str | None = None) -> list[list[float]]:
+    assert input_type in (None, "query")
     return [[0.0, 1.0] if text == "docs" else [1.0, 0.0] for text in texts]
 
 
@@ -76,15 +89,15 @@ def test_low_confidence_escalation_preserves_scope_and_budget():
         confidence=0.2,
         source=RouteSource.LLM,
     )
-    budget = Budget(max_steps=3, max_tokens=10, max_cost_usd=1)
+    max_steps = 3
+    budget = Budget(max_steps=max_steps, max_tokens=10, max_cost_usd=1)
     escalated = apply_escalation(original, RoutingPolicy(min_confidence=0.7), budget)
     assert escalated.depth is RouteDepth.MULTI_HOP
     assert escalated.tool is RouteTool.VECTOR
     assert escalated.source is RouteSource.ESCALATED
-    assert budget.max_steps == 3
+    assert budget.max_steps == max_steps
 
 
 def test_policy_forced_route_is_typed():
     policy = RoutingPolicy(forced_tool=RouteTool.PARAMETRIC, forced_depth=RouteDepth.PARAMETRIC)
     assert policy.forced_depth is RouteDepth.PARAMETRIC
-

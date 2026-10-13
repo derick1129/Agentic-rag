@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
+
 import httpx
 
-from adaptive.interfaces import RetrievalQuery
 from adaptive.retrieval.contracts import Reranker, ScoredChunk
+
+if TYPE_CHECKING:
+    from adaptive.interfaces import RetrievalQuery
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +39,8 @@ class NIMSReranker(Reranker):
             model = DEFAULT_NIMS_RERANK_MODEL
         self.model = model.lstrip("/")
         self.api_base = api_base.rstrip("/")
-        
-        # Support both integrate.api.nvidia.com/v1/ranking and legacy ai.api.nvidia.com/v1/retrieval/...
+
+        # Support both integrate.api.nvidia.com/v1/ranking and legacy retrieval endpoints
         if "retrieval" in self.api_base:
             self.endpoint = f"{self.api_base}/{self.model}/reranking"
         elif self.api_base.endswith("/ranking"):
@@ -77,10 +81,9 @@ class NIMSReranker(Reranker):
                 # NIM returns {"rankings": [{"index": int, "logit": float}, ...]}.
                 # Build an index -> score map.
                 scores_by_index = {
-                    int(entry["index"]): float(entry.get("logit", 0.0))
-                    for entry in rankings
+                    int(entry["index"]): float(entry.get("logit", 0.0)) for entry in rankings
                 }
-                
+
                 scored_chunks = []
                 for i, candidate in enumerate(candidates):
                     score = scores_by_index.get(i, candidate.score)
@@ -98,6 +101,8 @@ class NIMSReranker(Reranker):
                 return sorted(scored_chunks, key=lambda x: x.score, reverse=True)[:limit]
 
             except Exception as e:
-                # If the API call fails, preserve candidate order rather than obliterating scores to 0.0
-                logger.warning("NIMS re-ranking API call failed: %s. Preserving pre-rerank order.", e)
+                # Preserve candidate order rather than obliterating scores to 0.0
+                logger.warning(
+                    "NIMS re-ranking API call failed: %s. Preserving pre-rerank order.", e
+                )
                 return candidates[:limit]

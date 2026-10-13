@@ -74,7 +74,7 @@ class RetrievalGrader:
             return RetrievalGraderResult(
                 accept=True,
                 reason="no_reranker_available",
-                bm25_score=float(bm25_top1.score),
+                bm25_score=float(bm25_top1.score) if bm25_top1 is not None else None,
                 reranker_score=None,
                 score=0.0,
                 grade_threshold=self.grade_threshold,

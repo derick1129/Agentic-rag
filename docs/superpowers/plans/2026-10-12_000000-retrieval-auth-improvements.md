@@ -28,8 +28,14 @@ def test_returns_accept_when_reranker_better_than_bm25():
     grader = RetrievalGrader(grade_threshold=0.05)  # Configure only after labeled evaluation.
     result = grader.assess(
         query="refund policy",
-        bm25_top1=ScoredChunk(chunk=Chunk(id="b1", tenant_id="acme", acl=frozenset({"public"}), text="30-day refund"), score=0.7),
-        reranked_top1=ScoredChunk(chunk=Chunk(id="r1", tenant_id="acme", acl=frozenset({"public"}), text="30-day refund"), score=0.9),
+        bm25_top1=ScoredChunk(
+            chunk=Chunk(id="b1", tenant_id="acme", acl=frozenset({"public"}), text="30-day refund"),
+            score=0.7,
+        ),
+        reranked_top1=ScoredChunk(
+            chunk=Chunk(id="r1", tenant_id="acme", acl=frozenset({"public"}), text="30-day refund"),
+            score=0.9,
+        ),
     )
     assert result.accept is True
     assert result.reason == "reranker_outperformed"
@@ -102,8 +108,10 @@ git commit -m "feat: add query rewriter"
 def test_retrieve_with_grader_accepts_when_reranker_not_better():
     async def fail_bm25(query, limit):
         return []
+
     async def fail_dense(query, limit):
         return []
+
     retriever = HybridRetrieverService(bm25=fail_bm25, dense=fail_dense)
     gradered = RetrievalGraderBridge(retriever, use_rewrite=False)
     result = await gradered.retrieve(query="test", limit=3)
@@ -143,10 +151,19 @@ git commit -m "feat: wire retrieval grader into hybrid pipeline"
 def test_ground_answer_supported_by_evidence():
     validator = NLIValidator(threshold=0.55)
     answer = "The refund window is 30 days."
-    evidence = [{"id": "c1", "text": "Refunds are available within 30 days.", "tenant_id": "tenant-1", "acl": ["public"]}]
+    evidence = [
+        {
+            "id": "c1",
+            "text": "Refunds are available within 30 days.",
+            "tenant_id": "tenant-1",
+            "acl": ["public"],
+        }
+    ]
     result = validator.validate(
         answer=answer,
-        citations=[{"chunk_id": "c1", "document_id": "d1", "text": "Refunds are available within 30 days."}],
+        citations=[
+            {"chunk_id": "c1", "document_id": "d1", "text": "Refunds are available within 30 days."}
+        ],
         evidence_chunks=evidence,
     )
     assert result.status == "grounded"
@@ -271,8 +288,17 @@ def test_check_post_generation_denies_ungrounded_answer():
         groundedness_status="grounded",
         trace_id="trace-1",
     )
-    evidence = [{"id": "c1", "text": "Refunds are available within 30 days.", "tenant_id": "tenant-1", "acl": ["public"]}]
-    result = await runner.check_post_generation(answer, evidence, RequestContext(tenant_id="tenant-1", subject_id="user-1"))
+    evidence = [
+        {
+            "id": "c1",
+            "text": "Refunds are available within 30 days.",
+            "tenant_id": "tenant-1",
+            "acl": ["public"],
+        }
+    ]
+    result = await runner.check_post_generation(
+        answer, evidence, RequestContext(tenant_id="tenant-1", subject_id="user-1")
+    )
     assert result.action == GuardrailAction.DENY
     assert result.reason == "ungrounded"
 ```

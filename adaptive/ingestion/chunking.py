@@ -68,9 +68,11 @@ def _page_number(document: CanonicalDocument, line_number: int) -> int | None:
         if page_start < 0:
             continue
         if offset <= page_start + len(page_text):
-            return int(page.get("page_number")) if page.get("page_number") is not None else None
+            val = page.get("page_number")
+            return int(val) if val is not None else None
         cursor = page_start + len(page_text)
-    return int(document.pages[-1].get("page_number"))
+    last_val = document.pages[-1].get("page_number")
+    return int(last_val) if last_val is not None else None
 
 
 def _chunk_id(document: CanonicalDocument, ordinal: int, text: str) -> str:

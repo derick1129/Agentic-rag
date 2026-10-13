@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
-from adaptive.interfaces import Budget, RouteDecision, RouteDepth, RouteSource, RouteTool
-from adaptive.routers.contracts import RoutingPolicy
+from typing import TYPE_CHECKING
+
+from adaptive.interfaces import RouteDecision, RouteDepth, RouteSource, RouteTool
+
+if TYPE_CHECKING:
+    from adaptive.interfaces import Budget
+    from adaptive.routers.contracts import RoutingPolicy
 
 
 def normalize_decision(decision: RouteDecision) -> RouteDecision:

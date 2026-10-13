@@ -86,7 +86,7 @@ class EvaluationReport(BaseModel):
 
 async def _run_mode(
     items: list[EvalItem], provider: EvaluationProvider, mode: Literal["routed", "always_agentic"]
-):
+) -> list[EvaluationObservation]:
     observations = []
     for item in items:
         result = provider.run(item, mode) if hasattr(provider, "run") else provider(item, mode)  # type: ignore[operator]
@@ -109,7 +109,12 @@ def _metrics(items: list[EvalItem], observations: list[EvaluationObservation]) -
         citation_completeness(observation.citations, item.expected_citations)
         for item, observation in zip(items, observations, strict=True)
     ]
-    retrieval_scores = {"recall_at_5": [], "precision_at_5": [], "mrr": [], "ndcg": []}
+    retrieval_scores: dict[str, list[float]] = {
+        "recall_at_5": [],
+        "precision_at_5": [],
+        "mrr": [],
+        "ndcg": [],
+    }
     sql_scores = []
     for item, observation in zip(items, observations, strict=True):
         retrieval_scores["recall_at_5"].append(

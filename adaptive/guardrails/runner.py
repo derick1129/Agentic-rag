@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 from adaptive.guardrails.input import InputRequest, check_input
 from adaptive.guardrails.output import check_output
@@ -64,17 +65,23 @@ class GuardrailRunner:
         answer: Answer | str,
         evidence: Iterable[Any],
         context: RequestContext,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> GuardrailResult:
         if isinstance(answer, Answer):
             answer_text = answer.text
             citations = list(answer.citations)
         else:
             answer_text = str(answer)
-            citations = list(kwargs.get("citations", []))
+            raw_citations = kwargs.get("citations")
+            citations = (
+                [c for c in raw_citations if isinstance(c, dict)]
+                if isinstance(raw_citations, Iterable)
+                else []
+            )
 
         evidence_list = list(evidence)
-        tenant_id = kwargs.get("tenant_id", context.tenant_id if context else None)
+        raw_tenant = kwargs.get("tenant_id", context.tenant_id if context else None)
+        tenant_id = str(raw_tenant) if isinstance(raw_tenant, str) else None
 
         kwargs_copy = dict(kwargs)
         kwargs_copy.pop("citations", None)
@@ -133,4 +140,3 @@ class GuardrailRunner:
             details=details,
             span_attributes=span_attributes,
         )
-

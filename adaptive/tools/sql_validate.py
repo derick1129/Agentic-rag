@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NoReturn
 
 import sqlglot
 from sqlglot import exp
@@ -14,6 +14,12 @@ class SQLValidationError(ValueError):
     """Raised when a generated SQL statement is unsafe or outside policy."""
 
 
+def _raise_validation_error(reason: str, cause: Exception | None = None) -> NoReturn:
+    if cause is not None:
+        raise SQLValidationError(reason) from cause
+    raise SQLValidationError(reason)
+
+
 @dataclass(frozen=True)
 class ValidatedSQL:
     sql: str
@@ -21,9 +27,9 @@ class ValidatedSQL:
     max_rows: int
     params: dict[str, Any]
 
-    def with_tenant(self, tenant_id: str) -> "ValidatedSQL":
+    def with_tenant(self, tenant_id: str) -> ValidatedSQL:
         if not tenant_id or any(char in tenant_id for char in ("\x00", "\n", "\r")):
-            raise SQLValidationError("tenant_id is invalid")
+            _raise_validation_error("tenant_id is invalid")
 
         scoped_table_count = 0
         for select in self.ast.find_all(exp.Select):
@@ -60,7 +66,7 @@ class ValidatedSQL:
                 )
 
         if scoped_table_count == 0:
-            raise SQLValidationError("query must reference a tenant-scoped table")
+            _raise_validation_error("query must reference a tenant-scoped table")
         return ValidatedSQL(
             sql=self.ast.sql(dialect="postgres"),
             ast=self.ast,
@@ -84,6 +90,51 @@ _FORBIDDEN = (
 )
 
 
+def _parse_single_select(sql: str) -> exp.Select:
+    if not sql or not sql.strip():
+        _raise_validation_error("SQL is empty")
+    try:
+        statements = sqlglot.parse(sql, read="postgres")
+    except ParseError as exc:
+        _raise_validation_error("SQL could not be parsed", exc)
+    if len(statements) != 1:
+        _raise_validation_error("exactly one SQL statement is required")
+    statement = statements[0]
+    if not isinstance(statement, exp.Select):
+        _raise_validation_error("only SELECT statements are allowed")
+    if any(statement.find(node_type) is not None for node_type in _FORBIDDEN):
+        _raise_validation_error("read-only SELECT required")
+    if any(isinstance(node, (exp.Into, exp.Lock)) for node in statement.walk()):
+        _raise_validation_error("locking and INTO clauses are not allowed")
+    return statement
+
+
+def _validate_table_schemas(
+    statement: exp.Select,
+    allowed_schemas: set[str] | frozenset[str],
+) -> None:
+    allowed = set(allowed_schemas)
+    for table in statement.find_all(exp.Table):
+        if table.catalog or (table.db and table.db not in allowed):
+            _raise_validation_error("table schema is not allowlisted")
+        if not table.name:
+            _raise_validation_error("table name is required")
+
+
+def _apply_row_limit(statement: exp.Select, max_rows: int) -> None:
+    if max_rows < 1:
+        _raise_validation_error("max_rows must be positive")
+    limit = statement.args.get("limit")
+    if limit is not None:
+        expression = limit.expression
+        if not isinstance(expression, exp.Literal) or not expression.is_int:
+            _raise_validation_error("LIMIT must be a positive integer")
+        if int(expression.this) > max_rows:
+            _raise_validation_error("LIMIT exceeds configured maximum")
+    else:
+        statement.set("limit", exp.Limit(expression=exp.Literal.number(max_rows)))
+
+
 def validate_sql(
     sql: str,
     allowed_schemas: set[str] | frozenset[str] = frozenset({"public"}),
@@ -91,39 +142,12 @@ def validate_sql(
 ) -> ValidatedSQL:
     """Parse one bounded SELECT and reject all write/control statements."""
     if not sql or not sql.strip():
-        raise SQLValidationError("SQL is empty")
+        _raise_validation_error("SQL is empty")
     if max_rows < 1:
-        raise SQLValidationError("max_rows must be positive")
-    try:
-        statements = sqlglot.parse(sql, read="postgres")
-    except ParseError as exc:
-        raise SQLValidationError("SQL could not be parsed") from exc
-    if len(statements) != 1:
-        raise SQLValidationError("exactly one SQL statement is required")
-    statement = statements[0]
-    if not isinstance(statement, exp.Select):
-        raise SQLValidationError("only SELECT statements are allowed")
-    if any(statement.find(node_type) is not None for node_type in _FORBIDDEN):
-        raise SQLValidationError("read-only SELECT required")
-    if any(isinstance(node, (exp.Into, exp.Lock)) for node in statement.walk()):
-        raise SQLValidationError("locking and INTO clauses are not allowed")
-
-    allowed = set(allowed_schemas)
-    for table in statement.find_all(exp.Table):
-        if table.catalog or (table.db and table.db not in allowed):
-            raise SQLValidationError("table schema is not allowlisted")
-        if not table.name:
-            raise SQLValidationError("table name is required")
-
-    limit = statement.args.get("limit")
-    if limit is not None:
-        expression = limit.expression
-        if not isinstance(expression, exp.Literal) or not expression.is_int:
-            raise SQLValidationError("LIMIT must be a positive integer")
-        if int(expression.this) > max_rows:
-            raise SQLValidationError("LIMIT exceeds configured maximum")
-    else:
-        statement.set("limit", exp.Limit(expression=exp.Literal.number(max_rows)))
+        _raise_validation_error("max_rows must be positive")
+    statement = _parse_single_select(sql)
+    _validate_table_schemas(statement, allowed_schemas)
+    _apply_row_limit(statement, max_rows)
     return ValidatedSQL(
         sql=statement.sql(dialect="postgres"),
         ast=statement,

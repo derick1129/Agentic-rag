@@ -19,9 +19,11 @@ async def _maybe_await(value: Any) -> Any:
 
 async def _search_stage(stage: Any, query: RetrievalQuery, limit: int) -> list[ScoredChunk]:
     if hasattr(stage, "search"):
-        return await _maybe_await(stage.search(query, limit))
+        stage_hits: list[ScoredChunk] = await _maybe_await(stage.search(query, limit))
+        return stage_hits
     if callable(stage):
-        return await _maybe_await(stage(query, limit))
+        callable_hits: list[ScoredChunk] = await _maybe_await(stage(query, limit))
+        return callable_hits
     return []
 
 

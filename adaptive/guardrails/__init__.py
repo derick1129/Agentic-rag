@@ -11,6 +11,9 @@ from adaptive.guardrails.sanitize import (
 
 __all__ = [
     "GuardrailRunner",
+    "NLIProvider",
+    "NLIResult",
+    "NLIValidator",
     "frame_retrieved_content",
     "neutralize_policy_injection",
     "render_retrieved_content",

@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
-from collections.abc import Sequence
+import inspect
+from collections.abc import Awaitable, Sequence
 from typing import Any
 
 from adaptive.interfaces import Chunk, ChunkDraft, RetrievalQuery
@@ -15,6 +17,12 @@ from adaptive.retrieval.contracts import (
     IndexWriteResult,
     ScoredChunk,
 )
+
+
+async def _resolve_awaitable(
+    awaitable: Awaitable[list[list[float]]],
+) -> list[list[float]]:
+    return await awaitable
 
 
 class OpenSearchIndexWriter:
@@ -79,7 +87,11 @@ class OpenSearchIndexWriter:
             return IndexWriteResult([], [])
         self.ensure_index()
         if embeddings is None and self.embedding_provider is not None:
-            embeddings = self.embedding_provider.embed([chunk.text for chunk in chunks])
+            raw_embeddings = self.embedding_provider.embed([chunk.text for chunk in chunks])
+            if inspect.isawaitable(raw_embeddings):
+                embeddings = asyncio.run(_resolve_awaitable(raw_embeddings))
+            else:
+                embeddings = raw_embeddings
         if embeddings is not None and len(embeddings) != len(chunks):
             raise ValueError("embedding count must match chunk count")  # noqa: TRY003
         body: list[dict[str, Any]] = []
@@ -181,7 +193,9 @@ class OpenSearchStage:
         if self.kind == "dense":
             if self.embedding_provider is None:
                 raise RuntimeError("dense stage requires an embedding provider")  # noqa: TRY003
-            vector = self.embedding_provider.embed([query.text], input_type="query")[0]
+            raw_vector = self.embedding_provider.embed([query.text], input_type="query")
+            embeddings = await raw_vector if inspect.isawaitable(raw_vector) else raw_vector
+            vector = embeddings[0]
             query_body["query"] = {
                 "knn": {
                     "embedding": {

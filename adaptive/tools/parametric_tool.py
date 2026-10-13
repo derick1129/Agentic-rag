@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Protocol
 
 from adaptive.interfaces import RouteTool, ToolContext, ToolResult, ToolStatus
+
+
+class _ParametricGenerator(Protocol):
+    async def generate(self, prompt: str, max_tokens: int, temperature: float = 0.0) -> str: ...
 
 
 class ParametricTool:
     tool_type = RouteTool.PARAMETRIC
 
-    def __init__(self, generator: Any) -> None:
+    def __init__(self, generator: _ParametricGenerator) -> None:
         self.generator = generator
 
     async def run(self, context: ToolContext) -> ToolResult:

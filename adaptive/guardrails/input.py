@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -28,8 +29,13 @@ _INJECTION_MARKERS = (
 )
 
 
-def _result(action: GuardrailAction, code: str, message: str, **details: Any) -> GuardrailResult:
-    safe_details = {"code": code, **details}
+def _result(
+    action: GuardrailAction,
+    code: str,
+    message: str,
+    **details: int | str,
+) -> GuardrailResult:
+    safe_details: dict[str, Any] = {"code": code, **details}
     return GuardrailResult(
         action=action,
         reason=message,
@@ -51,6 +57,23 @@ def coerce_request(request: InputRequest | Mapping[str, Any]) -> InputRequest | 
             return InputRequest.model_validate(request)
         except Exception:
             return None
+    return None
+
+
+def _validate_payload(payload: dict[str, Any], max_payload_bytes: int) -> GuardrailResult | None:
+    try:
+        payload_bytes = len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+    except (TypeError, ValueError):
+        return _result(
+            GuardrailAction.DENY, "invalid_payload", "Request payload is not serializable."
+        )
+    if payload_bytes > max_payload_bytes:
+        return _result(
+            GuardrailAction.DENY,
+            "payload_too_large",
+            "Request payload exceeds the configured size limit.",
+            limit=max_payload_bytes,
+        )
     return None
 
 
@@ -79,26 +102,18 @@ def check_input(
             "Query exceeds the configured size limit.",
             limit=max_query_chars,
         )
-    try:
-        payload_bytes = len(json.dumps(parsed.payload, ensure_ascii=False).encode("utf-8"))
-    except (TypeError, ValueError):
-        return _result(
-            GuardrailAction.DENY, "invalid_payload", "Request payload is not serializable."
-        )
-    if payload_bytes > max_payload_bytes:
-        return _result(
-            GuardrailAction.DENY,
-            "payload_too_large",
-            "Request payload exceeds the configured size limit.",
-            limit=max_payload_bytes,
-        )
+    payload_error = _validate_payload(parsed.payload, max_payload_bytes)
+    if payload_error is not None:
+        return payload_error
     lowered = query.casefold()
     matched = next((marker for marker in _INJECTION_MARKERS if re.search(marker, lowered)), None)
-    if matched:
-        return _result(
+    return (
+        _result(
             GuardrailAction.DENY,
             "prompt_injection",
             "Prompt-injection language is not permitted.",
             marker=matched,
         )
-    return _result(GuardrailAction.ALLOW, "input_valid", "Input passed validation.")
+        if matched
+        else _result(GuardrailAction.ALLOW, "input_valid", "Input passed validation.")
+    )
