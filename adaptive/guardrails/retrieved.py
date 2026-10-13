@@ -5,20 +5,18 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
+from adaptive.guardrails.sanitize import frame_retrieved_content
 from adaptive.interfaces import Chunk, GuardrailAction, GuardrailResult, RequestContext, ToolResult
 
 
-def _chunk_value(chunk: Chunk | dict[str, Any], key: str, default: Any = None) -> Any:
+def _chunk_value(chunk: Chunk | dict[str, Any], key: str, default: object = None) -> object:
     return getattr(chunk, key, chunk.get(key, default) if isinstance(chunk, dict) else default)
 
 
-def _chunks(value: Any) -> list[Chunk | dict[str, Any]]:
+def _chunks(value: object) -> list[Chunk | dict[str, Any]]:
     if isinstance(value, Iterable) and not isinstance(value, (str, bytes, dict)):
         return [item for item in value if isinstance(item, (Chunk, dict))]
     return []
-
-
-from adaptive.guardrails.sanitize import frame_retrieved_content
 
 
 def check_tool_result(result: ToolResult, context: RequestContext) -> GuardrailResult:
@@ -30,7 +28,12 @@ def check_tool_result(result: ToolResult, context: RequestContext) -> GuardrailR
     for chunk in chunks:
         if _chunk_value(chunk, "tenant_id") != context.tenant_id:
             return _deny("tenant_mismatch", "Retrieved content crossed tenant scope.")
-        acl = frozenset(_chunk_value(chunk, "acl", frozenset()))
+        raw_acl = _chunk_value(chunk, "acl", frozenset())
+        acl = (
+            frozenset(str(item) for item in raw_acl)
+            if isinstance(raw_acl, Iterable) and not isinstance(raw_acl, (str, bytes))
+            else frozenset()
+        )
         if not context.can_access(acl):
             return _deny("acl_mismatch", "Retrieved content is not authorized for this subject.")
     return GuardrailResult(

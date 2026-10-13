@@ -6,17 +6,28 @@ import inspect
 import time
 from asyncio import wait_for
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
+
+from pydantic import BaseModel
 
 from adaptive.graph.agent_policy import AgentAction, AgentPolicy, EvidenceCheck, action_key
 from adaptive.interfaces import (
     AgentState,
     Answer,
+    Budget,
     CacheStatus,
+    Generator,
     RouteTool,
     TerminationReason,
     ToolStatus,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
+T = TypeVar("T")
+ModelT = TypeVar("ModelT", bound=BaseModel)
+GroundednessStatus = Literal["grounded", "partial", "ungrounded", "refused"]
 
 
 @dataclass
@@ -29,43 +40,48 @@ class AgentDeps:
     guardrail_runner: Any | None = None
 
 
-async def _structured(
-    generator: Any,
-    prompt: str,
-    schema: type[Any],
-    max_tokens: int,
-    timeout: float,
-    budget: Any,
-) -> Any:
-    result = await wait_for(
-        generator.generate_structured(prompt, schema, max_tokens), timeout=timeout
-    )
+def _charge_generator_usage(generator: object, budget: Budget) -> None:
     usage = getattr(generator, "last_usage", None) or getattr(generator, "usage", None) or {}
     if isinstance(usage, dict):
-        budget.charge(
-            tokens=int(usage.get("tokens", usage.get("total_tokens", 0))),
-            cost_usd=float(usage.get("cost_usd", 0.0)),
-        )
-    return result
+        raw_tokens = usage.get("tokens", usage.get("total_tokens", 0))
+        raw_cost = usage.get("cost_usd", 0.0)
+        tokens = int(raw_tokens) if isinstance(raw_tokens, (int, float, str)) else 0
+        cost_usd = float(raw_cost) if isinstance(raw_cost, (int, float, str)) else 0.0
+        budget.charge(tokens=tokens, cost_usd=cost_usd)
 
 
-async def _maybe(value: Any) -> Any:
-    return await value if inspect.isawaitable(value) else value
+async def _structured(
+    generator: Generator,
+    prompt: str,
+    schema: type[ModelT],
+    timeout: float,
+    budget: Budget,
+) -> ModelT:
+    result = await wait_for(
+        generator.generate_structured(prompt, schema, budget.remaining_tokens()),
+        timeout=timeout,
+    )
+    _charge_generator_usage(generator, budget)
+    return cast("ModelT", result)
+
+
+async def _maybe(value: Awaitable[T] | T) -> T:
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
 def _answer(
     state: AgentState,
     text: str,
     reason: TerminationReason,
-    grounded: str,
+    grounded: GroundednessStatus,
     citations: list[dict[str, Any]] | None = None,
-    refusal: str | None = None,
 ) -> Answer:
     return Answer(
         text=text,
         citations=citations or [],
         groundedness_status=grounded,
-        refusal_reason=refusal,
         route_decision=state.route_decision,
         actual_tools_used=list(
             dict.fromkeys(observation.tool for observation in state.observations)
@@ -76,278 +92,295 @@ def _answer(
     )
 
 
+def _refused_answer(
+    state: AgentState,
+    text: str,
+    reason: TerminationReason,
+    refusal: str,
+) -> Answer:
+    return _answer(state, text, reason, "refused").model_copy(update={"refusal_reason": refusal})
+
+
+def _refused_state(
+    state: AgentState,
+    reason: TerminationReason,
+    text: str,
+    refusal: str,
+) -> AgentState:
+    return state.model_copy(
+        update={
+            "termination_reason": reason,
+            "answer": _refused_answer(state, text, reason, refusal),
+        }
+    )
+
+
+def _check_pre_step_limits(
+    current: AgentState,
+    policy: AgentPolicy,
+    started: float,
+) -> AgentState | None:
+    budget = current.context.budget
+    if current.current_step >= policy.max_steps or budget.steps_taken >= budget.max_steps:
+        return _refused_state(
+            current,
+            TerminationReason.MAX_STEPS,
+            "I don't have enough evidence to answer reliably.",
+            "insufficient_evidence",
+        )
+    if budget.exceeded():
+        reason = (
+            TerminationReason.TIMEOUT
+            if time.monotonic() - started >= budget.max_wall_time_seconds
+            else TerminationReason.MAX_TOKENS
+            if budget.tokens_used >= budget.max_tokens
+            else TerminationReason.MAX_COST
+        )
+        return _refused_state(
+            current,
+            reason,
+            "I don't have enough evidence to answer reliably.",
+            "budget_exceeded",
+        )
+    if budget.max_wall_time_seconds - (time.monotonic() - started) <= 0:
+        return _refused_state(
+            current,
+            TerminationReason.TIMEOUT,
+            "I don't have enough time to answer reliably.",
+            "timeout",
+        )
+    return None
+
+
+async def _plan_next_action(
+    current: AgentState,
+    deps: AgentDeps,
+    remaining_time: float,
+) -> tuple[AgentAction | None, AgentState | None]:
+    budget = current.context.budget
+    try:
+        action = await _structured(
+            deps.generator,
+            f"Choose one approved tool and a focused next query. Original: {current.query}. "
+            f"Observations: {len(current.observations)}. "
+            f"Allowed: {[tool.value for tool in deps.policy.allowed_tools]}",
+            AgentAction,
+            remaining_time,
+            budget,
+        )
+    except TimeoutError:
+        return None, _refused_state(
+            current,
+            TerminationReason.TIMEOUT,
+            "I don't have enough time to answer reliably.",
+            "timeout",
+        )
+    except Exception:
+        return None, _refused_state(
+            current,
+            TerminationReason.TOOL_FAILURE,
+            "I couldn't plan a safe next step.",
+            "invalid_action",
+        )
+    return action, None
+
+
+async def _complete_from_done_action(current: AgentState, deps: AgentDeps) -> AgentState:
+    if current.evidence_sufficient:
+        reason = TerminationReason.ANSWER_COMPLETE
+        text = await _synthesize(current, deps)
+        final_answer = _answer(current, text, reason, "grounded", _citations(current))
+    else:
+        reason = TerminationReason.INSUFFICIENT_EVIDENCE
+        final_answer = _refused_answer(
+            current,
+            "I don't have enough evidence to answer reliably.",
+            reason,
+            "insufficient_evidence",
+        )
+    final_answer = await _guard_output(current, final_answer, deps)
+    return current.model_copy(
+        update={
+            "termination_reason": reason,
+            "answer": final_answer,
+        }
+    )
+
+
+def _validate_planned_action(
+    current: AgentState,
+    action: AgentAction,
+    deps: AgentDeps,
+    seen: set[tuple[str, str]],
+) -> AgentState | None:
+    if action.tool not in deps.policy.allowed_tools or action.tool not in deps.tools:
+        return _refused_state(
+            current,
+            TerminationReason.TOOL_FAILURE,
+            "I can't use that tool for this request.",
+            "tool_not_allowed",
+        )
+    key = action_key(action)
+    if key in seen:
+        return _refused_state(
+            current,
+            TerminationReason.REPEATED_ACTION,
+            "I don't have enough evidence to answer reliably.",
+            "repeated_action",
+        )
+    seen.add(key)
+    return None
+
+
+async def _execute_step_tool(
+    current: AgentState,
+    action: AgentAction,
+    deps: AgentDeps,
+    remaining_time: float,
+) -> tuple[AgentState, bool]:
+    try:
+        observation = await wait_for(
+            deps.tools[action.tool].run(
+                current.context.model_copy(
+                    update={"query": action.query, "step_number": current.current_step + 1}
+                )
+            ),
+            timeout=max(0.001, remaining_time),
+        )
+    except TimeoutError:
+        return (
+            _refused_state(
+                current,
+                TerminationReason.TIMEOUT,
+                "I don't have enough time to answer reliably.",
+                "timeout",
+            ),
+            True,
+        )
+    observations = [*current.observations, observation]
+    if deps.guardrail_runner is not None:
+        guardrail = await deps.guardrail_runner.check_tool_result(
+            observation, current.context.request_context
+        )
+        if guardrail.action.value in {"deny", "refuse"}:
+            return (
+                _refused_state(
+                    current,
+                    TerminationReason.TOOL_FAILURE,
+                    "I couldn't use that evidence safely.",
+                    guardrail.details.get("code", "guardrail_denied"),
+                ),
+                True,
+            )
+    next_state = current.model_copy(
+        update={"observations": observations, "current_step": current.current_step + 1}
+    )
+    current.context.budget.charge(
+        steps=1,
+        tokens=int(observation.usage.get("tokens", 0)),
+        cost_usd=float(observation.usage.get("cost_usd", 0.0)),
+    )
+    if observation.status in {ToolStatus.ERROR, ToolStatus.TIMEOUT, ToolStatus.REJECTED}:
+        return (
+            _refused_state(
+                next_state,
+                TerminationReason.TOOL_FAILURE,
+                "I couldn't obtain reliable evidence.",
+                "tool_failure",
+            ),
+            True,
+        )
+    return next_state, False
+
+
+async def _evaluate_step_evidence(
+    next_state: AgentState,
+    deps: AgentDeps,
+    remaining_time: float,
+) -> AgentState | None:
+    try:
+        check = await _check_evidence(next_state, deps, max(0.001, remaining_time))
+    except TimeoutError:
+        return _refused_state(
+            next_state,
+            TerminationReason.TIMEOUT,
+            "I don't have enough time to answer reliably.",
+            "timeout",
+        )
+    except Exception:
+        return _refused_state(
+            next_state,
+            TerminationReason.TOOL_FAILURE,
+            "I couldn't verify the evidence safely.",
+            "evidence_check_failed",
+        )
+    if not check.sufficient:
+        return None
+    text = await _synthesize(next_state, deps)
+    reason = TerminationReason.ANSWER_COMPLETE
+    final_answer = _answer(
+        next_state,
+        text,
+        reason,
+        "grounded",
+        _citations(next_state),
+    )
+    final_answer = await _guard_output(next_state, final_answer, deps)
+    return next_state.model_copy(
+        update={
+            "evidence_sufficient": True,
+            "termination_reason": reason,
+            "answer": final_answer,
+        }
+    )
+
+
 async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
     """Run plan → act → observe → check until a hard stop is reached."""
     current = state
     started = time.monotonic()
     seen: set[tuple[str, str]] = set()
-    policy = deps.policy
     while True:
-        budget = current.context.budget
-        if current.current_step >= policy.max_steps or budget.steps_taken >= budget.max_steps:
-            reason = TerminationReason.MAX_STEPS
-            return current.model_copy(
-                update={
-                    "termination_reason": reason,
-                    "answer": _answer(
-                        current,
-                        "I don't have enough evidence to answer reliably.",
-                        reason,
-                        "refused",
-                        refusal="insufficient_evidence",
-                    ),
-                }
-            )
-        if budget.exceeded():
-            reason = (
-                TerminationReason.TIMEOUT
-                if time.monotonic() - started >= budget.max_wall_time_seconds
-                else TerminationReason.MAX_TOKENS
-                if budget.tokens_used >= budget.max_tokens
-                else TerminationReason.MAX_COST
-            )
-            return current.model_copy(
-                update={
-                    "termination_reason": reason,
-                    "answer": _answer(
-                        current,
-                        "I don't have enough evidence to answer reliably.",
-                        reason,
-                        "refused",
-                        refusal="budget_exceeded",
-                    ),
-                }
-            )
+        limit_state = _check_pre_step_limits(current, deps.policy, started)
+        if limit_state is not None:
+            return limit_state
 
-        remaining_time = budget.max_wall_time_seconds - (time.monotonic() - started)
-        if remaining_time <= 0:
-            reason = TerminationReason.TIMEOUT
-            return current.model_copy(
-                update={
-                    "termination_reason": reason,
-                    "answer": _answer(
-                        current,
-                        "I don't have enough time to answer reliably.",
-                        reason,
-                        "refused",
-                        refusal="timeout",
-                    ),
-                }
-            )
-        try:
-            action = await _structured(
-                deps.generator,
-                f"Choose one approved tool and a focused next query. Original: {current.query}. "
-                f"Observations: {len(current.observations)}. "
-                f"Allowed: {[tool.value for tool in policy.allowed_tools]}",
-                AgentAction,
-                budget.remaining_tokens(),
-                remaining_time,
-                budget,
-            )
-        except TimeoutError:
-            reason = TerminationReason.TIMEOUT
-            return current.model_copy(
-                update={
-                    "termination_reason": reason,
-                    "answer": _answer(
-                        current,
-                        "I don't have enough time to answer reliably.",
-                        reason,
-                        "refused",
-                        refusal="timeout",
-                    ),
-                }
-            )
-        except Exception:
-            reason = TerminationReason.TOOL_FAILURE
-            return current.model_copy(
-                update={
-                    "termination_reason": reason,
-                    "answer": _answer(
-                        current,
-                        "I couldn't plan a safe next step.",
-                        reason,
-                        "refused",
-                        refusal="invalid_action",
-                    ),
-                }
-            )
-        if action.done:
-            reason = (
-                TerminationReason.ANSWER_COMPLETE
-                if current.evidence_sufficient
-                else TerminationReason.INSUFFICIENT_EVIDENCE
-            )
-            text = (
-                await _synthesize(current, deps)
-                if current.evidence_sufficient
-                else "I don't have enough evidence to answer reliably."
-            )
-            final_answer = _answer(
+        remaining_time = current.context.budget.max_wall_time_seconds - (time.monotonic() - started)
+        action, error_state = await _plan_next_action(current, deps, remaining_time)
+        if error_state is not None or action is None:
+            return error_state or _refused_state(
                 current,
-                text,
-                reason,
-                "grounded" if current.evidence_sufficient else "refused",
-                _citations(current) if current.evidence_sufficient else [],
-                None if current.evidence_sufficient else "insufficient_evidence",
+                TerminationReason.TOOL_FAILURE,
+                "I couldn't plan a safe next step.",
+                "invalid_action",
             )
-            final_answer = await _guard_output(current, final_answer, deps)
-            return current.model_copy(
-                update={
-                    "termination_reason": reason,
-                    "answer": final_answer,
-                }
-            )
-        if action.tool not in policy.allowed_tools or action.tool not in deps.tools:
-            reason = TerminationReason.TOOL_FAILURE
-            return current.model_copy(
-                update={
-                    "termination_reason": reason,
-                    "answer": _answer(
-                        current,
-                        "I can't use that tool for this request.",
-                        reason,
-                        "refused",
-                        refusal="tool_not_allowed",
-                    ),
-                }
-            )
-        key = action_key(action)
-        if key in seen:
-            reason = TerminationReason.REPEATED_ACTION
-            return current.model_copy(
-                update={
-                    "termination_reason": reason,
-                    "answer": _answer(
-                        current,
-                        "I don't have enough evidence to answer reliably.",
-                        reason,
-                        "refused",
-                        refusal="repeated_action",
-                    ),
-                }
-            )
-        seen.add(key)
 
-        remaining_time = budget.max_wall_time_seconds - (time.monotonic() - started)
-        try:
-            observation = await wait_for(
-                deps.tools[action.tool].run(
-                    current.context.model_copy(
-                        update={"query": action.query, "step_number": current.current_step + 1}
-                    )
-                ),
-                timeout=max(0.001, remaining_time),
-            )
-        except TimeoutError:
-            reason = TerminationReason.TIMEOUT
-            return current.model_copy(
-                update={
-                    "termination_reason": reason,
-                    "answer": _answer(
-                        current,
-                        "I don't have enough time to answer reliably.",
-                        reason,
-                        "refused",
-                        refusal="timeout",
-                    ),
-                }
-            )
-        observations = [*current.observations, observation]
-        if deps.guardrail_runner is not None:
-            guardrail = await deps.guardrail_runner.check_tool_result(
-                observation, current.context.request_context
-            )
-            if guardrail.action.value in {"deny", "refuse"}:
-                reason = TerminationReason.TOOL_FAILURE
-                return current.model_copy(
-                    update={
-                        "termination_reason": reason,
-                        "answer": _answer(
-                            current,
-                            "I couldn't use that evidence safely.",
-                            reason,
-                            "refused",
-                            refusal=guardrail.details.get("code", "guardrail_denied"),
-                        ),
-                    }
-                )
-        next_state = current.model_copy(
-            update={"observations": observations, "current_step": current.current_step + 1}
-        )
-        budget.charge(
-            steps=1,
-            tokens=int(observation.usage.get("tokens", 0)),
-            cost_usd=float(observation.usage.get("cost_usd", 0.0)),
-        )
-        if observation.status in {ToolStatus.ERROR, ToolStatus.TIMEOUT, ToolStatus.REJECTED}:
-            reason = TerminationReason.TOOL_FAILURE
-            return next_state.model_copy(
-                update={
-                    "termination_reason": reason,
-                    "answer": _answer(
-                        next_state,
-                        "I couldn't obtain reliable evidence.",
-                        reason,
-                        "refused",
-                        refusal="tool_failure",
-                    ),
-                }
-            )
-        try:
-            check = await _check_evidence(next_state, deps, max(0.001, remaining_time))
-        except TimeoutError:
-            reason = TerminationReason.TIMEOUT
-            return next_state.model_copy(
-                update={
-                    "termination_reason": reason,
-                    "answer": _answer(
-                        next_state,
-                        "I don't have enough time to answer reliably.",
-                        reason,
-                        "refused",
-                        refusal="timeout",
-                    ),
-                }
-            )
-        except Exception:
-            reason = TerminationReason.TOOL_FAILURE
-            return next_state.model_copy(
-                update={
-                    "termination_reason": reason,
-                    "answer": _answer(
-                        next_state,
-                        "I couldn't verify the evidence safely.",
-                        reason,
-                        "refused",
-                        refusal="evidence_check_failed",
-                    ),
-                }
-            )
-        if check.sufficient:
-            text = await _synthesize(next_state, deps)
-            reason = TerminationReason.ANSWER_COMPLETE
-            final_answer = _answer(next_state, text, reason, "grounded", _citations(next_state))
-            final_answer = await _guard_output(next_state, final_answer, deps)
-            return next_state.model_copy(
-                update={
-                    "evidence_sufficient": True,
-                    "termination_reason": reason,
-                    "answer": final_answer,
-                }
-            )
+        if action.done:
+            return await _complete_from_done_action(current, deps)
+
+        invalid_state = _validate_planned_action(current, action, deps, seen)
+        if invalid_state is not None:
+            return invalid_state
+
+        remaining_time = current.context.budget.max_wall_time_seconds - (time.monotonic() - started)
+        next_state, terminated = await _execute_step_tool(current, action, deps, remaining_time)
+        if terminated:
+            return next_state
+
+        completed_state = await _evaluate_step_evidence(next_state, deps, remaining_time)
+        if completed_state is not None:
+            return completed_state
         current = next_state
 
 
 async def _check_evidence(state: AgentState, deps: AgentDeps, timeout: float) -> EvidenceCheck:
     if deps.evidence_checker is not None:
-        return await wait_for(deps.evidence_checker(state), timeout=timeout)
+        checked: EvidenceCheck = await wait_for(deps.evidence_checker(state), timeout=timeout)
+        return checked
     return await _structured(
         deps.generator,
         f"Is the following evidence sufficient? {state.observations}",
         EvidenceCheck,
-        state.context.budget.remaining_tokens(),
         timeout,
         state.context.budget,
     )
@@ -363,14 +396,7 @@ async def _synthesize(state: AgentState, deps: AgentDeps) -> str:
     result = await deps.generator.generate(
         prompt, state.context.budget.remaining_tokens(), temperature=0
     )
-    usage = (
-        getattr(deps.generator, "last_usage", None) or getattr(deps.generator, "usage", None) or {}
-    )
-    if isinstance(usage, dict):
-        state.context.budget.charge(
-            tokens=int(usage.get("tokens", usage.get("total_tokens", 0))),
-            cost_usd=float(usage.get("cost_usd", 0.0)),
-        )
+    _charge_generator_usage(deps.generator, state.context.budget)
     return str(result)
 
 

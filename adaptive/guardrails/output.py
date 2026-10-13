@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from adaptive.interfaces import Answer, GuardrailAction, GuardrailResult, RequestContext, ToolResult
 
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+_MIN_CLAIM_WORDS = 2
 _PII_PATTERNS = {
     "email": re.compile(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b"),
     "phone": re.compile(r"(?<!\w)(?:\+?\d[\d(). -]{8,}\d)(?!\w)"),
@@ -133,17 +136,19 @@ def _unsupported_claims(answer: str, evidence: str, threshold: float) -> list[st
         words = {
             word for word in re.findall(r"[a-z0-9]+", sentence.casefold()) if word not in _STOPWORDS
         }
-        if (
-            len(words) >= 2
-            and not (words & evidence_words)
-            or len(words) >= 2
-            and len(words & evidence_words) / len(words) < threshold
+        if len(words) >= _MIN_CLAIM_WORDS and (
+            not (words & evidence_words) or len(words & evidence_words) / len(words) < threshold
         ):
             claims.append(sentence)
     return claims
 
 
-def _output(action: GuardrailAction, code: str, reason: str, **details: Any) -> GuardrailResult:
+def _output(
+    action: GuardrailAction,
+    code: str,
+    reason: str,
+    **details: list[str] | float,
+) -> GuardrailResult:
     return GuardrailResult(
         action=action,
         reason=reason,
