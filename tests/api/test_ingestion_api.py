@@ -76,12 +76,8 @@ def test_app(ingestion_service: IngestionService) -> TestClient:
         acl=frozenset({"read", "write"}),
     )
 
-    app.dependency_overrides[api_main.get_current_context] = (
-        lambda: default_context
-    )
-    app.dependency_overrides[api_main.get_ingestion_service] = (
-        lambda: ingestion_service
-    )
+    app.dependency_overrides[api_main.get_current_context] = lambda: default_context
+    app.dependency_overrides[api_main.get_ingestion_service] = lambda: ingestion_service
 
     with TestClient(app, raise_server_exceptions=False) as client:
         yield client
@@ -192,9 +188,7 @@ def test_omitted_idempotency_key_derived_deterministically(
     assert res1.json()["job_id"] == res2.json()["job_id"]
 
 
-def test_tenant_isolation_submission_and_get(
-    test_app: TestClient, db_session: Session
-) -> None:
+def test_tenant_isolation_submission_and_get(test_app: TestClient, db_session: Session) -> None:
     context_alpha = RequestContext(
         tenant_id="tenant-alpha",
         subject_id="user-1",
@@ -207,9 +201,7 @@ def test_tenant_isolation_submission_and_get(
     )
 
     current_context = context_alpha
-    test_app.app.dependency_overrides[api_main.get_current_context] = (
-        lambda: current_context
-    )
+    test_app.app.dependency_overrides[api_main.get_current_context] = lambda: current_context
 
     headers = {"Idempotency-Key": "shared-key"}
     payload = {"filename": "shared.txt", "content": "Shared content across tenants"}

@@ -539,7 +539,6 @@ class IdempotencyConflictError(ValueError):
     """Raised when an idempotency key is reused with a different payload."""
 
 
-
 # =============================================================================
 # Repository Protocols
 # =============================================================================
@@ -634,6 +633,7 @@ class IngestionJobRepository(Protocol):
         error_code: str,
         error_message: str,
     ) -> IngestionJob: ...
+
 
 class Document(BaseModel):
     id: str

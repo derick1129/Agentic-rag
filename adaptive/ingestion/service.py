@@ -100,7 +100,6 @@ def classify_failure(exc: Exception, *, stage: str = "parsing") -> tuple[bool, s
     return permanent, code_str, safe_message
 
 
-
 async def _maybe_await(value: Any) -> Any:
     return await value if inspect.isawaitable(value) else value
 
@@ -134,9 +133,7 @@ class _MemoryIngestionJobRepository:
             return None
         return job
 
-    def get_by_idempotency_key(
-        self, tenant_id: str, idempotency_key: str
-    ) -> IngestionJob | None:
+    def get_by_idempotency_key(self, tenant_id: str, idempotency_key: str) -> IngestionJob | None:
         for job in self._jobs.values():
             if job.tenant_id == tenant_id and job.idempotency_key == idempotency_key:
                 return job
@@ -151,9 +148,7 @@ class _MemoryIngestionJobRepository:
     def claim_next(
         self, worker_id: str, now: datetime, lease_seconds: int
     ) -> ClaimedIngestionJob | None:
-        for job in sorted(
-            self._jobs.values(), key=lambda j: (j.available_at, j.created_at, j.id)
-        ):
+        for job in sorted(self._jobs.values(), key=lambda j: (j.available_at, j.created_at, j.id)):
             is_due_queued = (
                 job.status
                 in (
@@ -383,7 +378,6 @@ class IngestionService:
                 temp_dir = str(Path(tempfile.gettempdir()) / "adaptive_rag_ingestion")
             self.storage = FilesystemSourceStorage(temp_dir)
 
-
         self.jobs = (
             job_repository if job_repository is not None else _MemoryIngestionJobRepository()
         )
@@ -438,7 +432,7 @@ class IngestionService:
                     existing.payload_hash == payload_hash
                     and (existing.filename or "upload") == normalized_filename
                 ):
-                    return existing
+                    return cast("IngestionJob", existing)
                 raise IdempotencyConflictError(
                     f"Idempotency key '{idempotency_key}' already used with different payload"
                 )
@@ -450,7 +444,7 @@ class IngestionService:
                 self.jobs.get_by_idempotency_key(context.tenant_id, derived_key)
             )
             if existing is not None:
-                return existing
+                return cast("IngestionJob", existing)
             idempotency_key = derived_key
 
         job_id = str(uuid.uuid4())
@@ -484,19 +478,21 @@ class IngestionService:
                 self.session.rollback()
             raise
         else:
-            return persisted or job
-
+            return cast("IngestionJob", persisted or job)
 
     async def get_job(
         self, job_id: str, context: RequestContext | None = None
     ) -> IngestionJob | None:
         if self.jobs is not None:
             if "context" in inspect.signature(self.jobs.get).parameters:
-                return await _maybe_await(self.jobs.get(job_id, context=context))
+                return cast(
+                    "IngestionJob | None",
+                    await _maybe_await(self.jobs.get(job_id, context=context)),
+                )
             job = await _maybe_await(self.jobs.get(job_id))
             if job is not None and context is not None and job.tenant_id != context.tenant_id:
                 return None
-            return job
+            return cast("IngestionJob | None", job)
         return None
 
     async def process(
@@ -510,7 +506,7 @@ class IngestionService:
         if job is None:
             raise LookupError("ingestion job not found")
         if job.status == IngestionStatus.ACTIVE:
-            return job
+            return cast("IngestionJob", job)
 
         if self.session is not None:
             from adaptive.db.session import set_tenant_context
@@ -637,8 +633,6 @@ class IngestionService:
             self.session.commit()
         return job
 
-
-
     async def _transition_stage(
         self,
         job: IngestionJob,
@@ -648,18 +642,21 @@ class IngestionService:
         lease_token: str | None = None,
     ) -> IngestionJob:
         if worker_id is not None and lease_token is not None and hasattr(self.jobs, "update_stage"):
-            return await _maybe_await(
-                self.jobs.update_stage(
-                    job.id,
-                    worker_id=worker_id,
-                    lease_token=lease_token,
-                    stage=status.value,
-                )
+            return cast(
+                "IngestionJob",
+                await _maybe_await(
+                    self.jobs.update_stage(
+                        job.id,
+                        worker_id=worker_id,
+                        lease_token=lease_token,
+                        stage=status.value,
+                    )
+                ),
             )
         updated = job.model_copy(update={"status": status, "current_stage": status.value})
         if hasattr(self.jobs, "update"):
             with contextlib.suppress(Exception):
-                return await _maybe_await(self.jobs.update(updated))
+                return cast("IngestionJob", await _maybe_await(self.jobs.update(updated)))
         return updated
 
     async def _transition_complete(
@@ -672,13 +669,16 @@ class IngestionService:
         attempts: int,
     ) -> IngestionJob:
         if worker_id is not None and lease_token is not None and hasattr(self.jobs, "complete"):
-            return await _maybe_await(
-                self.jobs.complete(
-                    job.id,
-                    worker_id=worker_id,
-                    lease_token=lease_token,
-                    document_id=document_id or "",
-                )
+            return cast(
+                "IngestionJob",
+                await _maybe_await(
+                    self.jobs.complete(
+                        job.id,
+                        worker_id=worker_id,
+                        lease_token=lease_token,
+                        document_id=document_id or "",
+                    )
+                ),
             )
         updated = job.model_copy(
             update={
@@ -696,16 +696,19 @@ class IngestionService:
         )
         if hasattr(self.jobs, "complete"):
             with contextlib.suppress(Exception):
-                return await _maybe_await(
-                    self.jobs.complete(
-                        job.id,
-                        worker_id=worker_id or "",
-                        lease_token=lease_token or "",
-                        document_id=document_id or "",
-                    )
+                return cast(
+                    "IngestionJob",
+                    await _maybe_await(
+                        self.jobs.complete(
+                            job.id,
+                            worker_id=worker_id or "",
+                            lease_token=lease_token or "",
+                            document_id=document_id or "",
+                        )
+                    ),
                 )
         if hasattr(self.jobs, "update"):
-            return await _maybe_await(self.jobs.update(updated))
+            return cast("IngestionJob", await _maybe_await(self.jobs.update(updated)))
         return updated
 
     async def _transition_dead_letter(
@@ -720,14 +723,17 @@ class IngestionService:
         attempts: int,
     ) -> IngestionJob:
         if worker_id is not None and lease_token is not None and hasattr(self.jobs, "dead_letter"):
-            return await _maybe_await(
-                self.jobs.dead_letter(
-                    job.id,
-                    worker_id=worker_id,
-                    lease_token=lease_token,
-                    error_code=error_code,
-                    error_message=error_message,
-                )
+            return cast(
+                "IngestionJob",
+                await _maybe_await(
+                    self.jobs.dead_letter(
+                        job.id,
+                        worker_id=worker_id,
+                        lease_token=lease_token,
+                        error_code=error_code,
+                        error_message=error_message,
+                    )
+                ),
             )
         updated = job.model_copy(
             update={
@@ -744,17 +750,20 @@ class IngestionService:
         )
         if hasattr(self.jobs, "dead_letter"):
             with contextlib.suppress(Exception):
-                return await _maybe_await(
-                    self.jobs.dead_letter(
-                        job.id,
-                        worker_id=worker_id or "",
-                        lease_token=lease_token or "",
-                        error_code=error_code,
-                        error_message=error_message,
-                    )
+                return cast(
+                    "IngestionJob",
+                    await _maybe_await(
+                        self.jobs.dead_letter(
+                            job.id,
+                            worker_id=worker_id or "",
+                            lease_token=lease_token or "",
+                            error_code=error_code,
+                            error_message=error_message,
+                        )
+                    ),
                 )
         if hasattr(self.jobs, "update"):
-            return await _maybe_await(self.jobs.update(updated))
+            return cast("IngestionJob", await _maybe_await(self.jobs.update(updated)))
         return updated
 
     async def _transition_retry_wait(
@@ -771,15 +780,18 @@ class IngestionService:
     ) -> IngestionJob:
         has_retry = hasattr(self.jobs, "schedule_retry")
         if worker_id is not None and lease_token is not None and has_retry:
-            return await _maybe_await(
-                self.jobs.schedule_retry(
-                    job.id,
-                    worker_id=worker_id,
-                    lease_token=lease_token,
-                    available_at=available_at,
-                    error_code=error_code,
-                    error_message=error_message,
-                )
+            return cast(
+                "IngestionJob",
+                await _maybe_await(
+                    self.jobs.schedule_retry(
+                        job.id,
+                        worker_id=worker_id,
+                        lease_token=lease_token,
+                        available_at=available_at,
+                        error_code=error_code,
+                        error_message=error_message,
+                    )
+                ),
             )
         updated = job.model_copy(
             update={
@@ -797,18 +809,21 @@ class IngestionService:
         )
         if hasattr(self.jobs, "schedule_retry"):
             with contextlib.suppress(Exception):
-                return await _maybe_await(
-                    self.jobs.schedule_retry(
-                        job.id,
-                        worker_id=worker_id or "",
-                        lease_token=lease_token or "",
-                        available_at=available_at,
-                        error_code=error_code,
-                        error_message=error_message,
-                    )
+                return cast(
+                    "IngestionJob",
+                    await _maybe_await(
+                        self.jobs.schedule_retry(
+                            job.id,
+                            worker_id=worker_id or "",
+                            lease_token=lease_token or "",
+                            available_at=available_at,
+                            error_code=error_code,
+                            error_message=error_message,
+                        )
+                    ),
                 )
         if hasattr(self.jobs, "update"):
-            return await _maybe_await(self.jobs.update(updated))
+            return cast("IngestionJob", await _maybe_await(self.jobs.update(updated)))
         return updated
 
     async def _chunk(
@@ -864,9 +879,7 @@ class IngestionService:
         if self.embedding_provider is not None and chunks:
             return cast(
                 "list[list[float]]",
-                await _maybe_await(
-                    self.embedding_provider.embed([chunk.text for chunk in chunks])
-                ),
+                await _maybe_await(self.embedding_provider.embed([chunk.text for chunk in chunks])),
             )
         return []
 
@@ -887,9 +900,7 @@ class IngestionService:
             acl=document.acl,
         )
         persisted = (
-            await _maybe_await(
-                self.documents.get(document.metadata["document_id"], context)
-            )
+            await _maybe_await(self.documents.get(document.metadata["document_id"], context))
             if hasattr(self.documents, "get")
             else None
         )
@@ -903,10 +914,9 @@ class IngestionService:
                     update={"metadata": {**document.metadata, "document_id": persisted.id}}
                 )
                 rechunked = chunk_document(document, self.chunk_policy)
-        elif (
-            persisted.content_hash == document.content_hash
-            and getattr(persisted, "status", None) in ("active", DocumentStatus.ACTIVE)
-        ):
+        elif persisted.content_hash == document.content_hash and getattr(
+            persisted, "status", None
+        ) in ("active", DocumentStatus.ACTIVE):
             pass
         elif persisted.content_hash != document.content_hash:
             version = document.metadata["version"]
@@ -941,7 +951,6 @@ class IngestionService:
         return document, rechunked
 
     async def _persist(
-
         self,
         job: IngestionJob,
         document: CanonicalDocument,
@@ -991,7 +1000,6 @@ class IngestionService:
                 chunks = rechunked
 
         # Idempotent chunk persistence: delete existing chunks for (doc_id, version) before insert
-
 
         # Idempotent chunk persistence: delete existing chunks for (doc_id, version) before insert
         if self.chunks is not None:

@@ -33,7 +33,6 @@ class TransientTimeoutError(RuntimeError):
         super().__init__("transient timeout")
 
 
-
 class FlakyServiceUnavailableError(RuntimeError):
     def __init__(self) -> None:
         super().__init__("flaky service unavailable")
@@ -47,7 +46,6 @@ class CrashPersistenceError(RuntimeError):
 class InvalidMalformedSyntaxError(ValueError):
     def __init__(self) -> None:
         super().__init__("invalid malformed input syntax")
-
 
 
 @dataclass
@@ -165,7 +163,6 @@ async def test_service_transient_failure_exhausts_to_dead_letter(tmp_path: Path)
     def parser(payload: bytes, mime_type: str):
         raise FlakyServiceUnavailableError
 
-
     storage = FilesystemSourceStorage(tmp_path)
     service = IngestionService(storage=storage, parser=parser, max_attempts=MAX_ATTEMPTS)
     context = RequestContext(tenant_id="tenant-1", subject_id="user-1")
@@ -245,10 +242,7 @@ async def test_service_crash_replay_idempotency(tmp_path: Path):
                 if calls == 1:
                     raise CrashPersistenceError
 
-
-        service = IngestionService(
-            storage=storage, session=session, indexer=CrashingIndexer()
-        )
+        service = IngestionService(storage=storage, session=session, indexer=CrashingIndexer())
         job = await service.submit(FakeSource(b"# Crash Replay\n\nContent body"), context)
 
         # Attempt 1 crashes at indexing stage -> retry_wait
@@ -260,9 +254,11 @@ async def test_service_crash_replay_idempotency(tmp_path: Path):
         assert recovered.status == IngestionStatus.ACTIVE
 
         # Verify no duplicate chunks in database
-        chunk_count = session.query(ChunkModel).filter(
-            ChunkModel.document_id == recovered.document_id
-        ).count()
+        chunk_count = (
+            session.query(ChunkModel)
+            .filter(ChunkModel.document_id == recovered.document_id)
+            .count()
+        )
         assert chunk_count == 1
 
         # Re-running an already ACTIVE job is an idempotent no-op
@@ -298,12 +294,8 @@ async def test_service_submit_idempotency_conflict_and_replay(tmp_path: Path):
         )
 
     # Omitted key derives deterministic key from tenant + filename + sha256
-    auto1 = await service.submit(
-        FakeSource(b"auto content", filename="auto.txt"), context
-    )
-    auto2 = await service.submit(
-        FakeSource(b"auto content", filename="auto.txt"), context
-    )
+    auto1 = await service.submit(FakeSource(b"auto content", filename="auto.txt"), context)
+    auto2 = await service.submit(FakeSource(b"auto content", filename="auto.txt"), context)
     assert auto1.id == auto2.id
     assert auto1.idempotency_key is not None
 

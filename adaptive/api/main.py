@@ -331,7 +331,7 @@ def create_app() -> FastAPI:
         context: RequestContext = Depends(get_current_context),
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
         ingestion_service: IngestionService = Depends(get_ingestion_service),
-    ):
+    ) -> IngestionResponse:
         payload = SourcePayload(
             data=request.content.encode("utf-8"),
             filename=request.filename,
@@ -360,7 +360,7 @@ def create_app() -> FastAPI:
         context: RequestContext = Depends(get_current_context),
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
         ingestion_service: IngestionService = Depends(get_ingestion_service),
-    ):
+    ) -> IngestionResponse:
         data = await file.read()
         if not data:
             raise HTTPException(
@@ -408,7 +408,7 @@ def create_app() -> FastAPI:
         job_id: str,
         context: RequestContext = Depends(get_current_context),
         ingestion_service: IngestionService = Depends(get_ingestion_service),
-    ):
+    ) -> dict[str, Any]:
         job = await ingestion_service.get_job(job_id, context=context)
         if job is None:
             raise HTTPException(
