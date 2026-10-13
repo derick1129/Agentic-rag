@@ -61,9 +61,7 @@ _FK_CONSTRAINTS = [
 def upgrade() -> None:
     # Drop foreign key constraints first so column re-typing is allowed.
     for table, constraint in _FK_CONSTRAINTS:
-        op.execute(
-            f"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {constraint}"
-        )
+        op.execute(f"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {constraint}")
 
     # Re-type UUID columns to varchar(36). Existing UUID values are preserved
     # as their canonical string form.
@@ -75,48 +73,92 @@ def upgrade() -> None:
 
     # Re-create the foreign key constraints now that both sides are varchar.
     op.create_foreign_key(
-        "documents_tenant_id_fkey", "documents", "tenants",
-        ["tenant_id"], ["id"], ondelete="CASCADE",
+        "documents_tenant_id_fkey",
+        "documents",
+        "tenants",
+        ["tenant_id"],
+        ["id"],
+        ondelete="CASCADE",
     )
     op.create_foreign_key(
-        "document_versions_document_id_fkey", "document_versions", "documents",
-        ["document_id"], ["id"], ondelete="CASCADE",
+        "document_versions_document_id_fkey",
+        "document_versions",
+        "documents",
+        ["document_id"],
+        ["id"],
+        ondelete="CASCADE",
     )
     op.create_foreign_key(
-        "document_versions_tenant_id_fkey", "document_versions", "tenants",
-        ["tenant_id"], ["id"], ondelete="CASCADE",
+        "document_versions_tenant_id_fkey",
+        "document_versions",
+        "tenants",
+        ["tenant_id"],
+        ["id"],
+        ondelete="CASCADE",
     )
     op.create_foreign_key(
-        "chunks_document_id_fkey", "chunks", "documents",
-        ["document_id"], ["id"], ondelete="CASCADE",
+        "chunks_document_id_fkey",
+        "chunks",
+        "documents",
+        ["document_id"],
+        ["id"],
+        ondelete="CASCADE",
     )
     op.create_foreign_key(
-        "chunks_tenant_id_fkey", "chunks", "tenants",
-        ["tenant_id"], ["id"], ondelete="CASCADE",
+        "chunks_tenant_id_fkey",
+        "chunks",
+        "tenants",
+        ["tenant_id"],
+        ["id"],
+        ondelete="CASCADE",
     )
     op.create_foreign_key(
-        "ingestion_jobs_tenant_id_fkey", "ingestion_jobs", "tenants",
-        ["tenant_id"], ["id"], ondelete="CASCADE",
+        "ingestion_jobs_tenant_id_fkey",
+        "ingestion_jobs",
+        "tenants",
+        ["tenant_id"],
+        ["id"],
+        ondelete="CASCADE",
     )
     op.create_foreign_key(
-        "ingestion_jobs_document_id_fkey", "ingestion_jobs", "documents",
-        ["document_id"], ["id"], ondelete="SET NULL",
+        "ingestion_jobs_document_id_fkey",
+        "ingestion_jobs",
+        "documents",
+        ["document_id"],
+        ["id"],
+        ondelete="SET NULL",
     )
     op.create_foreign_key(
-        "query_runs_tenant_id_fkey", "query_runs", "tenants",
-        ["tenant_id"], ["id"], ondelete="CASCADE",
+        "query_runs_tenant_id_fkey",
+        "query_runs",
+        "tenants",
+        ["tenant_id"],
+        ["id"],
+        ondelete="CASCADE",
     )
     op.create_foreign_key(
-        "semantic_cache_entries_tenant_id_fkey", "semantic_cache_entries", "tenants",
-        ["tenant_id"], ["id"], ondelete="CASCADE",
+        "semantic_cache_entries_tenant_id_fkey",
+        "semantic_cache_entries",
+        "tenants",
+        ["tenant_id"],
+        ["id"],
+        ondelete="CASCADE",
     )
     op.create_foreign_key(
-        "evaluation_annotations_tenant_id_fkey", "evaluation_annotations", "tenants",
-        ["tenant_id"], ["id"], ondelete="CASCADE",
+        "evaluation_annotations_tenant_id_fkey",
+        "evaluation_annotations",
+        "tenants",
+        ["tenant_id"],
+        ["id"],
+        ondelete="CASCADE",
     )
     op.create_foreign_key(
-        "evaluation_annotations_query_run_id_fkey", "evaluation_annotations", "query_runs",
-        ["query_run_id"], ["id"], ondelete="CASCADE",
+        "evaluation_annotations_query_run_id_fkey",
+        "evaluation_annotations",
+        "query_runs",
+        ["query_run_id"],
+        ["id"],
+        ondelete="CASCADE",
     )
 
     # Seed the default tenant referenced by the default request context.
@@ -146,57 +188,96 @@ def downgrade() -> None:
     op.execute("DELETE FROM tenants WHERE id = 'default'")
 
     for table, constraint in _FK_CONSTRAINTS:
-        op.execute(
-            f"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {constraint}"
-        )
+        op.execute(f"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {constraint}")
 
     for table, column in _ID_STRING_COLUMNS:
-        op.execute(
-            f"ALTER TABLE {table} ALTER COLUMN {column} "
-            f"TYPE uuid USING {column}::uuid"
-        )
+        op.execute(f"ALTER TABLE {table} ALTER COLUMN {column} TYPE uuid USING {column}::uuid")
 
     op.create_foreign_key(
-        "documents_tenant_id_fkey", "documents", "tenants",
-        ["tenant_id"], ["id"], ondelete="CASCADE",
+        "documents_tenant_id_fkey",
+        "documents",
+        "tenants",
+        ["tenant_id"],
+        ["id"],
+        ondelete="CASCADE",
     )
     op.create_foreign_key(
-        "document_versions_document_id_fkey", "document_versions", "documents",
-        ["document_id"], ["id"], ondelete="CASCADE",
+        "document_versions_document_id_fkey",
+        "document_versions",
+        "documents",
+        ["document_id"],
+        ["id"],
+        ondelete="CASCADE",
     )
     op.create_foreign_key(
-        "document_versions_tenant_id_fkey", "document_versions", "tenants",
-        ["tenant_id"], ["id"], ondelete="CASCADE",
+        "document_versions_tenant_id_fkey",
+        "document_versions",
+        "tenants",
+        ["tenant_id"],
+        ["id"],
+        ondelete="CASCADE",
     )
     op.create_foreign_key(
-        "chunks_document_id_fkey", "chunks", "documents",
-        ["document_id"], ["id"], ondelete="CASCADE",
+        "chunks_document_id_fkey",
+        "chunks",
+        "documents",
+        ["document_id"],
+        ["id"],
+        ondelete="CASCADE",
     )
     op.create_foreign_key(
-        "chunks_tenant_id_fkey", "chunks", "tenants",
-        ["tenant_id"], ["id"], ondelete="CASCADE",
+        "chunks_tenant_id_fkey",
+        "chunks",
+        "tenants",
+        ["tenant_id"],
+        ["id"],
+        ondelete="CASCADE",
     )
     op.create_foreign_key(
-        "ingestion_jobs_tenant_id_fkey", "ingestion_jobs", "tenants",
-        ["tenant_id"], ["id"], ondelete="CASCADE",
+        "ingestion_jobs_tenant_id_fkey",
+        "ingestion_jobs",
+        "tenants",
+        ["tenant_id"],
+        ["id"],
+        ondelete="CASCADE",
     )
     op.create_foreign_key(
-        "ingestion_jobs_document_id_fkey", "ingestion_jobs", "documents",
-        ["document_id"], ["id"], ondelete="SET NULL",
+        "ingestion_jobs_document_id_fkey",
+        "ingestion_jobs",
+        "documents",
+        ["document_id"],
+        ["id"],
+        ondelete="SET NULL",
     )
     op.create_foreign_key(
-        "query_runs_tenant_id_fkey", "query_runs", "tenants",
-        ["tenant_id"], ["id"], ondelete="CASCADE",
+        "query_runs_tenant_id_fkey",
+        "query_runs",
+        "tenants",
+        ["tenant_id"],
+        ["id"],
+        ondelete="CASCADE",
     )
     op.create_foreign_key(
-        "semantic_cache_entries_tenant_id_fkey", "semantic_cache_entries", "tenants",
-        ["tenant_id"], ["id"], ondelete="CASCADE",
+        "semantic_cache_entries_tenant_id_fkey",
+        "semantic_cache_entries",
+        "tenants",
+        ["tenant_id"],
+        ["id"],
+        ondelete="CASCADE",
     )
     op.create_foreign_key(
-        "evaluation_annotations_tenant_id_fkey", "evaluation_annotations", "tenants",
-        ["tenant_id"], ["id"], ondelete="CASCADE",
+        "evaluation_annotations_tenant_id_fkey",
+        "evaluation_annotations",
+        "tenants",
+        ["tenant_id"],
+        ["id"],
+        ondelete="CASCADE",
     )
     op.create_foreign_key(
-        "evaluation_annotations_query_run_id_fkey", "evaluation_annotations", "query_runs",
-        ["query_run_id"], ["id"], ondelete="CASCADE",
+        "evaluation_annotations_query_run_id_fkey",
+        "evaluation_annotations",
+        "query_runs",
+        ["query_run_id"],
+        ["id"],
+        ondelete="CASCADE",
     )

@@ -194,9 +194,7 @@ class OpenSearchStage:
             if self.embedding_provider is None:
                 raise RuntimeError("dense stage requires an embedding provider")  # noqa: TRY003
             raw_vector = self.embedding_provider.embed([query.text], input_type="query")
-            embeddings = (
-                await raw_vector if inspect.isawaitable(raw_vector) else raw_vector
-            )
+            embeddings = await raw_vector if inspect.isawaitable(raw_vector) else raw_vector
             vector = embeddings[0]
             query_body["query"] = {
                 "knn": {

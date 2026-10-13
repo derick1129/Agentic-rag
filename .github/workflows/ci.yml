@@ -28,9 +28,28 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --frozen --all-groups
-      - run: uv run ruff check .
-      - run: uv run ruff format --check .
-      - run: uv run mypy adaptive
+      - name: Ruff check
+        id: ruff_check
+        run: uv run ruff check .
+        continue-on-error: true
+
+      - name: Format check
+        id: ruff_format
+        run: uv run ruff format --check .
+        continue-on-error: true
+
+      - name: Type check
+        id: mypy
+        run: uv run mypy adaptive
+        continue-on-error: true
+
+      - name: Quality gate
+        if: always()
+        run: |
+          if [ "${{ steps.ruff_check.outcome }}" != "success" ] || [ "${{ steps.ruff_format.outcome }}" != "success" ] || [ "${{ steps.mypy.outcome }}" != "success" ]; then
+            echo "One or more quality checks failed"
+            exit 1
+          fi
 
   unit:
     name: Unit tests
