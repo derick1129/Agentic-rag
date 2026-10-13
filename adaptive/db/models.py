@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
@@ -158,6 +158,33 @@ class IngestionJob(TimestampMixin, Base):
     attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     error_code: Mapped[str | None] = mapped_column(String(80))
     error_message: Mapped[str | None] = mapped_column(Text)
+    source_key: Mapped[str | None] = mapped_column(String(512))
+    filename: Mapped[str | None] = mapped_column(String(255))
+    mime_type: Mapped[str | None] = mapped_column(String(128))
+    source_uri: Mapped[str | None] = mapped_column(Text)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSON, default=dict, nullable=False
+    )
+    subject_id: Mapped[str] = mapped_column(String(255), default="system", nullable=False)
+    acl: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    idempotency_key: Mapped[str | None] = mapped_column(String(255))
+    payload_hash: Mapped[str | None] = mapped_column(String(128))
+    available_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    worker_id: Mapped[str | None] = mapped_column(String(255))
+    lease_token: Mapped[str | None] = mapped_column(String(255))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime)
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "idempotency_key", name="uq_ingestion_jobs_tenant_idempotency"
+        ),
+        Index(
+            "ix_ingestion_jobs_queue_claim",
+            "status",
+            "available_at",
+            "lease_expires_at",
+            "created_at",
+        ),
+    )
 
 
 class QueryRun(TimestampMixin, Base):

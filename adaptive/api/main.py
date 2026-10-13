@@ -9,7 +9,7 @@ import logging
 from typing import Any
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Depends, Request, status, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Depends, Request, status, UploadFile, File, Form, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -24,8 +24,18 @@ from adaptive.api.schemas import (
 )
 from adaptive.config import get_settings
 from adaptive.db.session import SessionLocal
-from adaptive.interfaces import CacheEntry, CacheLookup, GuardrailAction, RequestContext, RouteDepth, RouteTool
+from adaptive.interfaces import (
+    CacheEntry,
+    CacheLookup,
+    GuardrailAction,
+    IdempotencyConflictError,
+    IngestionJob,
+    RequestContext,
+    RouteDepth,
+    RouteTool,
+)
 from adaptive.guardrails.runner import GuardrailRunner
+from adaptive.ingestion.models import SourcePayload
 from adaptive.ingestion.service import IngestionService
 from adaptive.observability.attributes import TelemetryConfig
 from adaptive.observability.tracing import configure_telemetry
@@ -54,6 +64,21 @@ _cache_service: SemanticCacheService | None = None
 _embedding_provider: Any | None = None
 _generation_provider: Any | None = None
 _trace_manager: Any = None
+
+
+def get_ingestion_service() -> IngestionService:
+    """Return the active IngestionService or raise 503 if not initialized."""
+    if _ingestion_service is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Ingestion service not initialized",
+        )
+    return _ingestion_service
+
+
+def get_current_context(request: Request) -> RequestContext:
+    """FastAPI dependency to authenticate the request and return RequestContext."""
+    return authenticate_request(request)
 
 
 @asynccontextmanager
@@ -292,131 +317,108 @@ def create_app() -> FastAPI:
             timestamp=datetime.utcnow().isoformat() + "Z"
         )
     
-    def _ingestion_response(job) -> IngestionResponse:
+    def _ingestion_response(job: IngestionJob) -> IngestionResponse:
         return IngestionResponse(
             job_id=job.id,
-            status=job.status.value if hasattr(job.status, 'value') else str(job.status),
-            message=f"Ingestion job {job.id} submitted successfully"
+            status=job.status.value if hasattr(job.status, "value") else str(job.status),
+            message=f"Ingestion job {job.id} submitted successfully",
         )
-
-    def _log_processing_result(task: asyncio.Task) -> None:
-        try:
-            job = task.result()
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Ingestion processing task failed with unhandled exception: %s", exc)
-        else:
-            if job is not None:
-                status_str = job.status.value if hasattr(job.status, 'value') else str(job.status)
-                if status_str.lower() in ("failed", "error"):
-                    logger.error(
-                        "Ingestion job %s failed at stage '%s': [%s] %s",
-                        job.id,
-                        job.current_stage,
-                        job.error_code,
-                        job.error_message,
-                    )
-                else:
-                    logger.info("Ingestion job %s finished: %s", job.id, status_str)
-                    # Refresh BM25 index for tenant so new chunks are searchable
-                    if _bm25_stage is not None:
-                        tenant_id = getattr(job, "tenant_id", None)
-                        _bm25_stage.invalidate(tenant_id)
-
-    async def _submit_and_process(payload, context) -> IngestionJob:
-        job = await _ingestion_service.submit(payload, context)
-        task = asyncio.create_task(_ingestion_service.process(job.id))
-        task.add_done_callback(_log_processing_result)
-        return job
 
     # Ingestion endpoint (text paste)
     @app.post("/v1/ingestion", response_model=IngestionResponse)
     async def ingest_document(
         request: IngestionRequest,
-        context: RequestContext = Depends(authenticate_request)
-    ):
-        if not _ingestion_service:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Ingestion service not initialized"
-            )
-        
-        # Convert request to source payload
-        from adaptive.ingestion.models import SourcePayload
-        
+        context: RequestContext = Depends(get_current_context),
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        ingestion_service: IngestionService = Depends(get_ingestion_service),
+    ) -> IngestionResponse:
         payload = SourcePayload(
-            data=request.content.encode('utf-8'),
+            data=request.content.encode("utf-8"),
             filename=request.filename,
             mime_type="text/plain",
-            metadata=request.metadata or {}
+            metadata=request.metadata or {},
         )
-        
-        job = await _submit_and_process(payload, context)
+
+        try:
+            job = await ingestion_service.submit(
+                payload,
+                context,
+                idempotency_key=idempotency_key,
+            )
+        except IdempotencyConflictError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc) or "Idempotency key already used with different payload",
+            ) from exc
         return _ingestion_response(job)
-    
+
     # Ingestion endpoint (file upload / multipart)
     @app.post("/v1/ingestion/upload", response_model=IngestionResponse)
     async def ingest_upload(
         file: UploadFile = File(...),
         metadata: str = Form("{}"),
-        context: RequestContext = Depends(authenticate_request)
-    ):
-        if not _ingestion_service:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Ingestion service not initialized"
-            )
-        
-        from adaptive.ingestion.models import SourcePayload
-        
+        context: RequestContext = Depends(get_current_context),
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        ingestion_service: IngestionService = Depends(get_ingestion_service),
+    ) -> IngestionResponse:
         data = await file.read()
         if not data:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Uploaded file is empty"
+                detail="Uploaded file is empty",
             )
-        
+
         meta = {}
         if metadata and metadata.strip():
             try:
                 import json
+
                 meta = json.loads(metadata)
                 if not isinstance(meta, dict):
                     raise ValueError("metadata must be a JSON object")
             except (ValueError, json.JSONDecodeError):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="metadata must be a valid JSON object"
+                    detail="metadata must be a valid JSON object",
                 )
-        
+
         payload = SourcePayload(
             data=data,
             filename=file.filename or "upload",
             mime_type=file.content_type or "application/octet-stream",
-            metadata=meta
+            metadata=meta,
         )
-        
-        job = await _submit_and_process(payload, context)
+
+        try:
+            job = await ingestion_service.submit(
+                payload,
+                context,
+                idempotency_key=idempotency_key,
+            )
+        except IdempotencyConflictError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc) or "Idempotency key already used with different payload",
+            ) from exc
         return _ingestion_response(job)
-    
+
     # Ingestion job status endpoint
     @app.get("/v1/ingestion/{job_id}")
-    async def get_ingestion_job(job_id: str):
-        if not _ingestion_service:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Ingestion service not initialized"
-            )
-        
-        job = await _ingestion_service.get_job(job_id)
+    async def get_ingestion_job(
+        job_id: str,
+        context: RequestContext = Depends(get_current_context),
+        ingestion_service: IngestionService = Depends(get_ingestion_service),
+    ) -> dict[str, Any]:
+        job = await ingestion_service.get_job(job_id, context=context)
         if job is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Ingestion job {job_id} not found"
+                detail=f"Ingestion job {job_id} not found",
             )
-        
+
         return {
             "job_id": job.id,
-            "status": job.status.value if hasattr(job.status, 'value') else str(job.status),
+            "status": job.status.value if hasattr(job.status, "value") else str(job.status),
             "current_stage": job.current_stage,
             "document_id": job.document_id,
             "error_code": job.error_code,
@@ -427,7 +429,7 @@ def create_app() -> FastAPI:
     @app.post("/v1/queries", response_model=QueryResponse)
     async def query_documents(
         request: QueryRequest,
-        context: RequestContext = Depends(authenticate_request)
+        context: RequestContext = Depends(get_current_context)
     ):
         if not _retrieval_service:
             raise HTTPException(

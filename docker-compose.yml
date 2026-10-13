@@ -53,6 +53,8 @@ services:
       RETRIEVAL_RERANK_ENABLED: ${RETRIEVAL_RERANK_ENABLED:-false}
       RETRIEVAL_RERANK_MODEL: ${RETRIEVAL_RERANK_MODEL:-cross-encoder/ms-marco-MiniLM-L-6-v2}
       RETRIEVAL_CONTEXT_TOKEN_BUDGET: ${RETRIEVAL_CONTEXT_TOKEN_BUDGET:-4000}
+      # Ingestion Settings
+      INGESTION_TEMP_DIR: /tmp/adaptive_rag_ingestion
       # OpenSearch
       OPENSEARCH_URL: ${OPENSEARCH_URL:-http://localhost:9200}
       OPENSEARCH_USERNAME: ${OPENSEARCH_USERNAME:-}
@@ -79,6 +81,62 @@ services:
         condition: service_healthy
       phoenix:
         condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      target: runtime
+    command: ["python", "-m", "adaptive.ingestion.worker"]
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://postgres:postgres@postgres:5432/adaptive_rag}
+      # Ingestion Settings
+      INGESTION_TEMP_DIR: /tmp/adaptive_rag_ingestion
+      # Redis
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_USERNAME: ${REDIS_USERNAME:-}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_SSL: ${REDIS_SSL:-false}
+      # Embedding Provider (OpenAI-compatible)
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-openai}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_API_BASE: ${EMBEDDING_API_BASE:-https://api.openai.com/v1}
+      EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE:-100}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1536}
+      EMBEDDING_TIMEOUT_SECONDS: ${EMBEDDING_TIMEOUT_SECONDS:-30}
+      EMBEDDING_MAX_RETRIES: ${EMBEDDING_MAX_RETRIES:-3}
+      # Generation Provider (OpenAI-compatible)
+      GENERATION_PROVIDER: ${GENERATION_PROVIDER:-openai}
+      GENERATION_MODEL: ${GENERATION_MODEL:-gpt-4o-mini}
+      GENERATION_API_KEY: ${GENERATION_API_KEY:-}
+      GENERATION_API_BASE: ${GENERATION_API_BASE:-https://api.openai.com/v1}
+      GENERATION_TIMEOUT_SECONDS: ${GENERATION_TIMEOUT_SECONDS:-60}
+      GENERATION_MAX_RETRIES: ${GENERATION_MAX_RETRIES:-3}
+      # NVIDIA NIMS Fallback & Overrides
+      NIMS_BASE_URL: ${NIMS_BASE_URL:-https://integrate.api.nvidia.com/v1}
+      NIMS_API_KEY: ${NIMS_API_KEY:-}
+      NIMS_EMBEDDING_MODEL: ${NIMS_EMBEDDING_MODEL:-nvidia/llama-nemotron-embed-vl-1b-v2}
+      NIMS_GENERATION_MODEL: ${NIMS_GENERATION_MODEL:-}
+      NIMS_RERANK_MODEL: ${NIMS_RERANK_MODEL:-nvidia/llama-nemotron-rerank-vl-1b-v2}
+      # Phoenix Observability
+      PHOENIX_ENABLED: ${PHOENIX_ENABLED:-true}
+      PHOENIX_ENDPOINT: ${PHOENIX_ENDPOINT:-http://phoenix:6006/v1/traces}
+      PHOENIX_PROJECT_NAME: ${PHOENIX_PROJECT_NAME:-adaptive-rag}
+      PHOENIX_REDACT_PROMPTS: ${PHOENIX_REDACT_PROMPTS:-true}
+      PHOENIX_REDACT_DOCUMENTS: ${PHOENIX_REDACT_DOCUMENTS:-true}
+      PHOENIX_REDACT_CREDENTIALS: ${PHOENIX_REDACT_CREDENTIALS:-true}
+    volumes:
+      - uploads:/tmp/adaptive_rag_ingestion
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      phoenix:
+        condition: service_healthy
+
 
   postgres:
     image: pgvector/pgvector:pg16
