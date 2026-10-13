@@ -158,9 +158,12 @@ def _authenticate_production(token: str | None, settings: Settings) -> RequestCo
     )
 
 
+_get_settings_dep: Any = Depends(get_settings)
+
+
 def authenticate_request(
     request: Request,
-    settings: Settings | None = None,
+    settings: Settings = _get_settings_dep,
 ) -> RequestContext:
     """Authenticate request and produce a frozen RequestContext.
 

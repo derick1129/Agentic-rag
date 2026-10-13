@@ -6,7 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from adaptive.interfaces import CanonicalDocument, ParsedDocument
+from adaptive.interfaces import CanonicalDocument, ClaimedIngestionJob, ParsedDocument
 
 
 class SourcePayload(BaseModel):
@@ -19,4 +19,4 @@ class SourcePayload(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-__all__ = ["CanonicalDocument", "ParsedDocument", "SourcePayload"]
+__all__ = ["CanonicalDocument", "ClaimedIngestionJob", "ParsedDocument", "SourcePayload"]

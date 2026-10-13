@@ -7,9 +7,17 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from adaptive.cache.postgres import PostgresCacheStore
+from adaptive.cache.references import PostgresReferenceChecker
 from adaptive.cache.service import CacheMetrics, SemanticCacheService
 from adaptive.db.models import Base, Document, DocumentVersion
-from adaptive.interfaces import CacheEntry, CacheLookup, RequestContext, RouteDepth, RouteTool
+from adaptive.interfaces import (
+    CacheEntry,
+    CacheHit,
+    CacheLookup,
+    RequestContext,
+    RouteDepth,
+    RouteTool,
+)
 
 SIMILARITY_THRESHOLD = 0.95
 
@@ -49,6 +57,7 @@ def _entry(  # noqa: PLR0913
     expires_at: datetime | None = None,
     model: str = "gpt-test",
     mode: str = "answer",
+    citations: list[dict[str, object]] | None = None,
     references: dict[str, int] | None = None,
 ) -> CacheEntry:
     return CacheEntry(
@@ -56,10 +65,10 @@ def _entry(  # noqa: PLR0913
         tenant_id=tenant,
         acl=acl,
         answer_text="approved",
-        citations=[{"document_id": "doc-1", "version": 1}],
+        citations=([{"document_id": "doc-1", "version": 1}] if citations is None else citations),
         model_profile=model,
         response_mode=mode,
-        referenced_document_versions=references or {},
+        referenced_document_versions={"doc-1": 1} if references is None else references,
         cost_usd=0.01,
         latency_ms=25,
         expires_at=expires_at or datetime.now(UTC) + timedelta(hours=1),
@@ -71,34 +80,42 @@ async def _put(store: PostgresCacheStore, entry: CacheEntry) -> None:
 
 
 def _active_document(session: Session, document_id: str = "doc-1", version: int = 1) -> None:
-    session.add(
-        Document(
-            id=document_id,
-            tenant_id="acme",
-            filename="policy.md",
-            content_hash=f"hash-{version}",
-            version=version,
-            canonical_text="refund policy",
-            acl=["support"],
-            status="active",
+    if session.get(Document, document_id) is None:
+        session.add(
+            Document(
+                id=document_id,
+                tenant_id="acme",
+                filename="policy.md",
+                content_hash=f"hash-{version}",
+                version=version,
+                canonical_text="refund policy",
+                acl=["support"],
+                status="active",
+            )
         )
+    existing_version = (
+        session.query(DocumentVersion)
+        .filter_by(document_id=document_id, version=version)
+        .one_or_none()
     )
-    session.add(
-        DocumentVersion(
-            document_id=document_id,
-            tenant_id="acme",
-            version=version,
-            content_hash=f"hash-{version}",
-            canonical_text="refund policy",
-            acl=["support"],
-            status="active",
+    if existing_version is None:
+        session.add(
+            DocumentVersion(
+                document_id=document_id,
+                tenant_id="acme",
+                version=version,
+                content_hash=f"hash-{version}",
+                canonical_text="refund policy",
+                acl=["support"],
+                status="active",
+            )
         )
-    )
     session.flush()
 
 
 @pytest.mark.asyncio
 async def test_cache_hit_requires_same_tenant_and_acl(session: Session) -> None:
+    _active_document(session)
     store = PostgresCacheStore(session, similarity_threshold=0.9)
     await _put(store, _entry())
 
@@ -109,6 +126,7 @@ async def test_cache_hit_requires_same_tenant_and_acl(session: Session) -> None:
 
 @pytest.mark.asyncio
 async def test_cache_lookup_requires_cosine_similarity_threshold(session: Session) -> None:
+    _active_document(session)
     store = PostgresCacheStore(session, similarity_threshold=SIMILARITY_THRESHOLD)
     await _put(store, _entry())
 
@@ -120,6 +138,7 @@ async def test_cache_lookup_requires_cosine_similarity_threshold(session: Sessio
 
 @pytest.mark.asyncio
 async def test_cache_lookup_rejects_expired_entries(session: Session) -> None:
+    _active_document(session)
     store = PostgresCacheStore(session)
     await _put(store, _entry(expires_at=datetime.now(UTC) - timedelta(seconds=1)))
 
@@ -131,6 +150,7 @@ async def test_cache_lookup_rejects_expired_entries(session: Session) -> None:
 async def test_cache_lookup_requires_model_and_response_mode_compatibility(
     session: Session,
 ) -> None:
+    _active_document(session)
     store = PostgresCacheStore(session)
     await _put(store, _entry())
 
@@ -167,6 +187,7 @@ async def test_document_version_invalidation_expires_matching_entries(session: S
 
 @pytest.mark.asyncio
 async def test_cache_service_emits_safe_status_metrics(session: Session) -> None:
+    _active_document(session)
     metrics = CacheMetrics()
     events: list[dict[str, object]] = []
     service = SemanticCacheService(
@@ -194,3 +215,207 @@ async def test_disabled_cache_reports_bypass_without_query_payload(session: Sess
     assert metrics.counts["bypass"] == 1
     assert events[0]["status"] == "bypass"
     assert "refund policy" not in str(events[0])
+
+
+class _StaticCandidateStore:
+    """In-memory store double that returns stored entries without DB validation."""
+
+    def __init__(self, candidate: CacheEntry | None = None) -> None:
+        self.entries: list[CacheEntry] = [candidate] if candidate is not None else []
+        self.last_status = "miss"
+
+    async def lookup(self, request: CacheLookup) -> CacheHit | None:
+        if not self.entries:
+            self.last_status = "miss"
+            return None
+        return CacheHit(entry=self.entries[-1], similarity=0.99)
+
+    async def put(self, entry: CacheEntry) -> None:
+        self.entries.append(entry)
+
+    async def invalidate_document(
+        self, tenant_id: str, document_id: str, version: int | None = None
+    ) -> int:
+        return 0
+
+
+class _FakeReferenceChecker:
+    def __init__(
+        self,
+        *,
+        active: dict[tuple[str, str, int], frozenset[str]] | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self.active = active or {}
+        self.error = error
+        self.calls: list[tuple[str, frozenset[str], dict[str, int]]] = []
+
+    async def are_active(
+        self,
+        tenant_id: str,
+        acl: frozenset[str],
+        references: dict[str, int],
+    ) -> bool:
+        self.calls.append((tenant_id, acl, dict(references)))
+        if self.error is not None:
+            raise self.error
+        if not references:
+            return False
+        for doc_id, version in references.items():
+            doc_acl = self.active.get((tenant_id, doc_id, version))
+            if doc_acl is None or not doc_acl.issubset(acl):
+                return False
+        return True
+
+
+@pytest.mark.asyncio
+async def test_service_validates_active_references_and_misses_when_replaced_or_deleted() -> None:
+    checker = _FakeReferenceChecker(active={("acme", "doc-1", 1): frozenset({"support"})})
+    store = _StaticCandidateStore()
+    metrics = CacheMetrics()
+    service = SemanticCacheService(
+        store,
+        enabled=True,
+        reference_checker=checker,
+        metrics=metrics,
+    )
+    await service.put(_entry(references={"doc-1": 1}))
+
+    hit = await service.lookup(_lookup())
+    assert hit is not None
+    assert hit.entry.answer_text == "approved"
+    assert metrics.counts["hit"] == 1
+
+    # Simulate replaced/deleted version in authoritative store without eager cache invalidation
+    checker.active.clear()
+    assert await service.lookup(_lookup()) is None
+    assert metrics.counts["stale"] == 1
+
+
+@pytest.mark.asyncio
+async def test_service_fails_closed_on_acl_change_tenant_mismatch_and_checker_error() -> None:
+    # Document ACL broadened to require {"support", "legal"}, which is not a subset of {"support"}
+    checker = _FakeReferenceChecker(active={("acme", "doc-1", 1): frozenset({"support", "legal"})})
+    store = _StaticCandidateStore(_entry(references={"doc-1": 1}))
+    metrics = CacheMetrics()
+    service = SemanticCacheService(
+        store,
+        enabled=True,
+        reference_checker=checker,
+        metrics=metrics,
+    )
+    assert await service.lookup(_lookup(acl=frozenset({"support"}))) is None
+    assert metrics.counts["stale"] == 1
+
+    # Preserve exact ACL matching between entry and request even if checker would allow subset
+    checker.active = {("acme", "doc-1", 1): frozenset({"support"})}
+    assert await service.lookup(_lookup(acl=frozenset({"support", "extra"}))) is None
+
+    # Tenant mismatch from underlying store must fail closed before returning
+    cross_tenant_store = _StaticCandidateStore(
+        _entry(tenant="other-tenant", references={"doc-1": 1})
+    )
+    cross_tenant_service = SemanticCacheService(
+        cross_tenant_store,
+        enabled=True,
+        reference_checker=checker,
+    )
+    assert await cross_tenant_service.lookup(_lookup(tenant="acme")) is None
+
+    # Checker exception must fail closed as a miss
+    failing_checker = _FakeReferenceChecker(error=RuntimeError("db unavailable"))
+    failing_metrics = CacheMetrics()
+    failing_service = SemanticCacheService(
+        _StaticCandidateStore(_entry(references={"doc-1": 1})),
+        enabled=True,
+        reference_checker=failing_checker,
+        metrics=failing_metrics,
+    )
+    assert await failing_service.lookup(_lookup()) is None
+    assert failing_metrics.counts["miss"] == 1
+
+
+@pytest.mark.asyncio
+async def test_service_rejects_entries_with_incomplete_citation_references() -> None:
+    checker = _FakeReferenceChecker(
+        active={
+            ("acme", "doc-1", 1): frozenset({"support"}),
+            ("acme", "doc-2", 1): frozenset({"support"}),
+        }
+    )
+    store = _StaticCandidateStore()
+    service = SemanticCacheService(store, enabled=True, reference_checker=checker)
+
+    # Entry with citations but empty referenced_document_versions must not be cached
+    await service.put(
+        _entry(
+            citations=[{"document_id": "doc-1", "version": 1}],
+            references={},
+        )
+    )
+    assert store.entries == []
+
+    # Entry with multiple citations where one cited document is missing from references
+    await service.put(
+        _entry(
+            citations=[
+                {"document_id": "doc-1", "version": 1},
+                {"document_id": "doc-2", "version": 1},
+            ],
+            references={"doc-1": 1},
+        )
+    )
+    assert store.entries == []
+
+    # Even if an incomplete entry is already in the store, lookup must fail closed
+    store.entries.append(
+        _entry(
+            citations=[{"document_id": "doc-1", "version": 1}],
+            references={},
+        )
+    )
+    assert await service.lookup(_lookup()) is None
+
+
+@pytest.mark.asyncio
+async def test_postgres_reference_checker_active_version_and_acl_semantics(
+    session: Session,
+) -> None:
+    _active_document(session, document_id="doc-1", version=1)
+    checker = PostgresReferenceChecker(session_factory=lambda: Session(bind=session.connection()))
+
+    # Active and ACL matches exactly
+    assert await checker.are_active("acme", frozenset({"support"}), {"doc-1": 1}) is True
+
+    # Active and ACL is a subset of request ACL
+    assert await checker.are_active("acme", frozenset({"support", "admin"}), {"doc-1": 1}) is True
+
+    # Empty references is always True
+    assert await checker.are_active("acme", frozenset({"support"}), {}) is True
+
+    # Empty tenant_id fails
+    assert await checker.are_active("", frozenset({"support"}), {"doc-1": 1}) is False
+
+    # Tenant mismatch fails
+    assert await checker.are_active("globex", frozenset({"support"}), {"doc-1": 1}) is False
+
+    # Request ACL missing required document ACL
+    assert await checker.are_active("acme", frozenset({"billing"}), {"doc-1": 1}) is False
+
+    # Non-existent document version
+    assert await checker.are_active("acme", frozenset({"support"}), {"doc-99": 1}) is False
+
+    # Deactivated / replaced status
+    session.query(DocumentVersion).filter_by(document_id="doc-1", version=1).update(
+        {"status": "replaced"}
+    )
+    session.flush()
+    assert await checker.are_active("acme", frozenset({"support"}), {"doc-1": 1}) is False
+
+    # Session / DB error fails closed
+    def _throwing_session() -> Session:
+        msg = "DB down"
+        raise RuntimeError(msg)
+
+    failing_checker = PostgresReferenceChecker(session_factory=_throwing_session)
+    assert await failing_checker.are_active("acme", frozenset({"support"}), {"doc-1": 1}) is False

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import inspect
 import json
 import logging
 import math
@@ -16,6 +18,8 @@ from redis.commands.search.query import Query
 from adaptive.cache.contracts import CacheEntry, CacheHit, CacheLookup, CacheStore
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
     from redis.client import Redis
 
 logger = logging.getLogger(__name__)
@@ -118,10 +122,8 @@ class RedisCacheStore(CacheStore):
     def _ensure_index(self) -> None:
         """Create the RediSearch index if it does not exist."""
         try:
-            # Try to describe the index to see if it exists
             self.redis.ft(self.index_name).describe()
         except Exception:
-            # Index does not exist, create it
             schema = (
                 # We don't store query_text, but we might for debugging
                 TextField("query_text", no_stem=True),
@@ -143,9 +145,9 @@ class RedisCacheStore(CacheStore):
                 ),
                 NumericField("created_at"),
                 NumericField("expires_at"),
-                TextField("referenced_document_versions"),  # JSON string
+                TextField("referenced_document_versions"),
                 TextField("answer_text"),
-                TextField("citations"),  # JSON string
+                TextField("citations"),
             )
             definition = IndexDefinition(prefix=[self.prefix], index_type=IndexType.HASH)
             self.redis.ft(self.index_name).create_index(fields=schema, definition=definition)
@@ -215,8 +217,10 @@ class RedisCacheStore(CacheStore):
             self.last_status = "stale" if saw_stale else "miss"
             return None
 
-        # Find the candidate with the highest similarity
         best_entry, best_similarity = max(candidates, key=lambda x: x[1])
+        cache_key = str(best_entry["id"])
+        with contextlib.suppress(Exception):
+            await _maybe_await(self.redis.hincrby(cache_key, "hit_count", 1))
 
         # Update hit count in Redis
         cache_key = best_entry["id"]
