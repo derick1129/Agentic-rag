@@ -110,7 +110,22 @@ class SemanticCacheService:
         if self.enabled and has_complete_references(entry):
             await self.store.put(entry)
 
-    async def invalidate_document(self, document_id: str, version: int) -> int:
-        count = await self.store.invalidate_document(document_id, version)
-        self._record("invalidated", document_id_hash=query_hash(document_id), count=count)
+    async def invalidate_document(
+        self, tenant_id: str, document_id: str | None = None, version: int | None = None
+    ) -> int:
+        if isinstance(document_id, int) and version is None:
+            doc_id = tenant_id
+            ver: int | None = document_id
+            t_id = ""
+        else:
+            doc_id = document_id or ""
+            ver = version
+            t_id = tenant_id
+        count = await self.store.invalidate_document(t_id, doc_id, ver)
+        self._record(
+            "invalidated",
+            document_id_hash=query_hash(doc_id),
+            count=count,
+            scope_id=scope_id(t_id) if t_id else "",
+        )
         return count
