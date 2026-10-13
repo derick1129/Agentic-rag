@@ -2,23 +2,34 @@
 
 from __future__ import annotations
 
+import contextlib
+import inspect
 import json
 import logging
 import math
 import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, TypeVar, cast
 
 from redis.commands.search.field import NumericField, TagField, TextField, VectorField
 from redis.commands.search.indexDefinition import IndexDefinition, IndexType
 from redis.commands.search.query import Query
 
 from adaptive.cache.contracts import CacheEntry, CacheHit, CacheLookup, CacheStore
+from adaptive.cache.references import has_complete_references
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
     from redis.client import Redis
 
-logger = logging.getLogger(__name__)
+T = TypeVar("T")
+
+
+async def _maybe_await(value: T | Awaitable[T]) -> T:
+    if inspect.isawaitable(value):
+        return cast("T", await value)
+    return value
 
 
 def _utc(value: datetime) -> datetime:
@@ -35,58 +46,23 @@ def _cosine(left: list[float], right: list[float]) -> float:
     return sum(a * b for a, b in zip(left, right, strict=True)) / (left_norm * right_norm)
 
 
-def _invalid_similarity_threshold_error() -> ValueError:
-    return ValueError("similarity_threshold must be between 0 and 1")
-
-
-def _missing_tenant_error() -> ValueError:
-    return ValueError("cache entry requires a tenant")
-
-
-def _doc_to_entry_dict(doc: object) -> dict[str, Any]:
+def _prepare_entry_data(entry: CacheEntry) -> dict[str, str]:
     return {
-        "id": getattr(doc, "id", ""),
-        "query_embedding": (
-            [float(v) for v in doc.query_embedding.split(",")]
-            if hasattr(doc, "query_embedding")
-            else []
-        ),
-        "tenant_id": doc.tenant_id if hasattr(doc, "tenant_id") else None,
-        "acl": (frozenset(doc.acl.split(",")) if hasattr(doc, "acl") and doc.acl else frozenset()),
-        "model_profile": doc.model_profile if hasattr(doc, "model_profile") else None,
-        "response_mode": doc.response_mode if hasattr(doc, "response_mode") else None,
-        "answer_text": doc.answer_text if hasattr(doc, "answer_text") else "",
-        "citations": (
-            json.loads(doc.citations) if hasattr(doc, "citations") and doc.citations else []
-        ),
-        "referenced_document_versions": (
-            json.loads(doc.referenced_document_versions)
-            if hasattr(doc, "referenced_document_versions") and doc.referenced_document_versions
-            else {}
-        ),
-        "cost_usd": float(doc.cost_usd) if hasattr(doc, "cost_usd") else 0.0,
-        "latency_ms": int(doc.latency_ms) if hasattr(doc, "latency_ms") else 0,
-        "created_at": (
-            datetime.fromtimestamp(int(doc.created_at), tz=UTC)
-            if hasattr(doc, "created_at")
-            else datetime.now(UTC)
-        ),
-        "expires_at": (
-            datetime.fromtimestamp(int(doc.expires_at), tz=UTC)
-            if hasattr(doc, "expires_at")
-            else datetime.max.replace(tzinfo=UTC)
-        ),
-        "hit_count": int(doc.hit_count) if hasattr(doc, "hit_count") else 0,
+        "query_text": "",
+        "tenant_id": entry.tenant_id,
+        "acl": ",".join(sorted(entry.acl)),
+        "model_profile": entry.model_profile,
+        "response_mode": entry.response_mode,
+        "answer_text": entry.answer_text,
+        "citations": json.dumps(entry.citations),
+        "referenced_document_versions": json.dumps(entry.referenced_document_versions),
+        "cost_usd": str(entry.cost_usd),
+        "latency_ms": str(entry.latency_ms),
+        "created_at": str(int(entry.created_at.timestamp())),
+        "expires_at": str(int(entry.expires_at.timestamp())),
+        "hit_count": str(entry.hit_count),
+        "query_embedding": ",".join(str(f) for f in entry.query_embedding),
     }
-
-
-def _matches_lookup(entry_dict: dict[str, Any], request: CacheLookup) -> bool:
-    return bool(
-        entry_dict["tenant_id"] == request.context.tenant_id
-        and frozenset(request.context.acl) == entry_dict["acl"]
-        and entry_dict["model_profile"] == request.model_profile
-        and entry_dict["response_mode"] == request.response_mode
-    )
 
 
 class RedisCacheStore(CacheStore):
@@ -106,7 +82,8 @@ class RedisCacheStore(CacheStore):
         vector_dimensions: int = 1536,
     ) -> None:
         if not 0.0 <= similarity_threshold <= 1.0:
-            raise _invalid_similarity_threshold_error()
+            msg = "similarity_threshold must be between 0 and 1"
+            raise ValueError(msg)
         self.redis = redis_client
         self.index_name = index_name
         self.prefix = prefix
@@ -118,15 +95,12 @@ class RedisCacheStore(CacheStore):
     def _ensure_index(self) -> None:
         """Create the RediSearch index if it does not exist."""
         try:
-            # Try to describe the index to see if it exists
             self.redis.ft(self.index_name).describe()
         except Exception:
-            # Index does not exist, create it
             schema = (
-                # We don't store query_text, but we might for debugging
                 TextField("query_text", no_stem=True),
                 TagField("tenant_id"),
-                TagField("acl", separator=","),  # Store ACL as a comma-separated string
+                TagField("acl", separator=","),
                 TagField("model_profile"),
                 TagField("response_mode"),
                 NumericField("cost_usd"),
@@ -143,22 +117,145 @@ class RedisCacheStore(CacheStore):
                 ),
                 NumericField("created_at"),
                 NumericField("expires_at"),
-                TextField("referenced_document_versions"),  # JSON string
+                TextField("referenced_document_versions"),
                 TextField("answer_text"),
-                TextField("citations"),  # JSON string
+                TextField("citations"),
             )
             definition = IndexDefinition(prefix=[self.prefix], index_type=IndexType.HASH)
-            self.redis.ft(self.index_name).create_index(fields=schema, definition=definition)
+            with contextlib.suppress(Exception):
+                self.redis.ft(self.index_name).create_index(
+                    fields=schema,
+                    definition=definition,
+                )
+
+    @staticmethod
+    def _parse_doc(doc: object) -> dict[str, object]:
+        def _get(field: str, default: object = None) -> object:
+            val = getattr(doc, field, default)
+            if isinstance(val, bytes):
+                return val.decode("utf-8")
+            return val
+
+        raw_embedding = _get("query_embedding", "")
+        if isinstance(raw_embedding, str) and raw_embedding:
+            embedding = [float(v) for v in raw_embedding.split(",")]
+        else:
+            embedding = []
+
+        raw_acl = _get("acl", "")
+        acl = frozenset(raw_acl.split(",")) if isinstance(raw_acl, str) and raw_acl else frozenset()
+
+        raw_citations = _get("citations", "[]")
+        citations: list[object] = []
+        if isinstance(raw_citations, str) and raw_citations:
+            with contextlib.suppress(Exception):
+                parsed = json.loads(raw_citations)
+                if isinstance(parsed, list):
+                    citations = parsed
+
+        raw_refs = _get("referenced_document_versions", "{}")
+        refs: dict[str, int] = {}
+        if isinstance(raw_refs, str) and raw_refs:
+            with contextlib.suppress(Exception):
+                parsed = json.loads(raw_refs)
+                if isinstance(parsed, dict):
+                    refs = {str(k): int(v) for k, v in parsed.items()}
+
+        raw_created = _get("created_at")
+        created_at = (
+            datetime.fromtimestamp(int(str(raw_created)), tz=UTC)
+            if raw_created is not None
+            else datetime.now(UTC)
+        )
+
+        raw_expires = _get("expires_at")
+        expires_at = (
+            datetime.fromtimestamp(int(str(raw_expires)), tz=UTC)
+            if raw_expires is not None
+            else datetime.max.replace(tzinfo=UTC)
+        )
+
+        return {
+            "id": getattr(doc, "id", ""),
+            "query_embedding": embedding,
+            "tenant_id": _get("tenant_id"),
+            "acl": acl,
+            "model_profile": _get("model_profile"),
+            "response_mode": _get("response_mode"),
+            "answer_text": _get("answer_text", ""),
+            "citations": citations,
+            "referenced_document_versions": refs,
+            "cost_usd": float(str(_get("cost_usd", 0.0) or 0.0)),
+            "latency_ms": int(str(_get("latency_ms", 0) or 0)),
+            "created_at": created_at,
+            "expires_at": expires_at,
+            "hit_count": int(str(_get("hit_count", 0) or 0)),
+        }
+
+    def _reverse_set_keys(self, entry: CacheEntry) -> list[tuple[str, str]]:
+        keys: list[tuple[str, str]] = []
+        for doc_id, ver in entry.referenced_document_versions.items():
+            ver_key = f"{self.prefix}ref:{entry.tenant_id}:{doc_id}:v:{int(ver)}"
+            doc_key = f"{self.prefix}ref:{entry.tenant_id}:{doc_id}:all"
+            keys.append((ver_key, doc_key))
+        return keys
+
+    async def _resolve_set_ttls(
+        self, reverse_keys: list[tuple[str, str]], entry_ttl: int
+    ) -> dict[str, int]:
+        set_ttls: dict[str, int] = {}
+        for ver_key, doc_key in reverse_keys:
+            for k in (ver_key, doc_key):
+                if k not in set_ttls:
+                    existing_ttl = await _maybe_await(self.redis.ttl(k))
+                    if isinstance(existing_ttl, int) and existing_ttl > 0:
+                        set_ttls[k] = max(existing_ttl, entry_ttl)
+                    else:
+                        set_ttls[k] = entry_ttl
+        return set_ttls
+
+    async def _delete_tenant_keys(self, keys: list[str], prefix: str) -> int:
+        deleted = 0
+        for key in keys:
+            if key.startswith(prefix):
+                res = await _maybe_await(self.redis.delete(key))
+                if res:
+                    deleted += int(str(res))
+        return deleted
+
+    async def _invalidate_version(self, tenant_id: str, document_id: str, version: int) -> int:
+        ver_set_key = f"{self.prefix}ref:{tenant_id}:{document_id}:v:{int(version)}"
+        doc_set_key = f"{self.prefix}ref:{tenant_id}:{document_id}:all"
+        raw_members = await _maybe_await(self.redis.smembers(ver_set_key))
+        members = raw_members if isinstance(raw_members, set | list) else set()
+        keys = [m.decode("utf-8") if isinstance(m, bytes) else str(m) for m in members]
+        deleted_count = await self._delete_tenant_keys(keys, f"{self.prefix}{tenant_id}:")
+        await _maybe_await(self.redis.delete(ver_set_key))
+        if keys:
+            await _maybe_await(self.redis.srem(doc_set_key, *keys))
+        return deleted_count
+
+    async def _invalidate_all(self, tenant_id: str, document_id: str) -> int:
+        doc_set_key = f"{self.prefix}ref:{tenant_id}:{document_id}:all"
+        raw_members = await _maybe_await(self.redis.smembers(doc_set_key))
+        members = raw_members if isinstance(raw_members, set | list) else set()
+        keys = [m.decode("utf-8") if isinstance(m, bytes) else str(m) for m in members]
+        deleted_count = await self._delete_tenant_keys(keys, f"{self.prefix}{tenant_id}:")
+        await _maybe_await(self.redis.delete(doc_set_key))
+        pattern = f"{self.prefix}ref:{tenant_id}:{document_id}:v:*"
+        with contextlib.suppress(Exception):
+            raw_ver_keys = await _maybe_await(self.redis.keys(pattern))
+            ver_keys = raw_ver_keys if isinstance(raw_ver_keys, list | set) else []
+            for vk in ver_keys:
+                vk_str = vk.decode("utf-8") if isinstance(vk, bytes) else str(vk)
+                await _maybe_await(self.redis.delete(vk_str))
+        return deleted_count
 
     async def lookup(self, request: CacheLookup) -> CacheHit | None:
         self.last_status = "miss"
         now = datetime.now(UTC)
 
-        # Prepare the query vector and convert to list of floats for Redis
-        vector = request.query_embedding
-        vector_bytes = [float(v) for v in vector]
-
-        # Build the RediSearch query with KNN search to fetch candidates before filtering
+        vector_bytes = [float(v) for v in request.query_embedding]
         k = 100
         q = (
             Query(f"*=>[KNN {k} @query_embedding $vec AS score]")
@@ -182,31 +279,39 @@ class RedisCacheStore(CacheStore):
             )
             .dialect(2)
         )
-        # In RediSearch, the score for a vector field with COSINE metric is cosine similarity.
         params = {"vec": vector_bytes}
 
         try:
-            results = self.redis.ft(self.index_name).search(q, params=params)
-        except Exception as e:
-            logger.warning("Redis search failed: %s", e)
+            search_cmd = self.redis.ft(self.index_name).search(q, params=params)
+            results = await _maybe_await(search_cmd)
+        except Exception:
             self.last_status = "error"
             return None
 
-        candidates: list[tuple[dict[str, Any], float]] = []
+        candidates: list[tuple[dict[str, object], float]] = []
         saw_stale = False
-        for doc in results.docs:
-            entry_dict = _doc_to_entry_dict(doc)
-            if not _matches_lookup(entry_dict, request):
+        docs = getattr(results, "docs", [])
+        for doc in docs:
+            entry_dict = self._parse_doc(doc)
+            if entry_dict["tenant_id"] != request.context.tenant_id:
                 continue
-            if entry_dict["expires_at"] <= now:
+            if frozenset(request.context.acl) != entry_dict["acl"]:
+                continue
+            if entry_dict["model_profile"] != request.model_profile:
+                continue
+            if entry_dict["response_mode"] != request.response_mode:
+                continue
+            expires_at = entry_dict["expires_at"]
+            if isinstance(expires_at, datetime) and expires_at <= now:
                 saw_stale = True
                 continue
-            # Referenced document version checks rely on explicit invalidation when
-            # document versions change, since this store does not hold a DB session.
+
+            query_emb = entry_dict["query_embedding"]
+            emb_list = query_emb if isinstance(query_emb, list) else []
             similarity = (
                 float(doc.score)
                 if hasattr(doc, "score")
-                else _cosine(entry_dict["query_embedding"], request.query_embedding)
+                else _cosine(emb_list, request.query_embedding)
             )
             if similarity >= self.similarity_threshold:
                 candidates.append((entry_dict, similarity))
@@ -215,61 +320,93 @@ class RedisCacheStore(CacheStore):
             self.last_status = "stale" if saw_stale else "miss"
             return None
 
-        # Find the candidate with the highest similarity
         best_entry, best_similarity = max(candidates, key=lambda x: x[1])
+        cache_key = str(best_entry["id"])
+        with contextlib.suppress(Exception):
+            await _maybe_await(self.redis.hincrby(cache_key, "hit_count", 1))
 
-        # Update hit count in Redis
-        cache_key = best_entry["id"]
-        try:
-            self.redis.hincrby(cache_key, "hit_count", 1)
-        except Exception:
-            logger.debug("Failed to increment hit_count for cache key %s", cache_key)
-
+        citations = best_entry["citations"]
+        refs = best_entry["referenced_document_versions"]
         entry = CacheEntry(
-            query_embedding=best_entry["query_embedding"],
-            tenant_id=best_entry["tenant_id"],
-            acl=best_entry["acl"],
-            answer_text=best_entry["answer_text"],
-            citations=best_entry["citations"],
-            model_profile=best_entry["model_profile"],
-            response_mode=best_entry["response_mode"],
-            referenced_document_versions=best_entry["referenced_document_versions"],
-            cost_usd=best_entry["cost_usd"],
-            latency_ms=best_entry["latency_ms"],
-            created_at=best_entry["created_at"],
-            expires_at=best_entry["expires_at"],
-            hit_count=best_entry["hit_count"] + 1,
+            query_embedding=(
+                best_entry["query_embedding"]
+                if isinstance(best_entry["query_embedding"], list)
+                else []
+            ),
+            tenant_id=str(best_entry["tenant_id"]),
+            acl=(best_entry["acl"] if isinstance(best_entry["acl"], frozenset) else frozenset()),
+            answer_text=str(best_entry["answer_text"]),
+            citations=citations if isinstance(citations, list) else [],
+            model_profile=str(best_entry["model_profile"]),
+            response_mode=str(best_entry["response_mode"]),
+            referenced_document_versions=refs if isinstance(refs, dict) else {},
+            cost_usd=float(str(best_entry["cost_usd"])),
+            latency_ms=int(str(best_entry["latency_ms"])),
+            created_at=(
+                best_entry["created_at"]
+                if isinstance(best_entry["created_at"], datetime)
+                else datetime.now(UTC)
+            ),
+            expires_at=(
+                best_entry["expires_at"]
+                if isinstance(best_entry["expires_at"], datetime)
+                else datetime.max.replace(tzinfo=UTC)
+            ),
+            hit_count=int(str(best_entry["hit_count"])) + 1,
         )
         return CacheHit(entry=entry, similarity=best_similarity)
 
     async def put(self, entry: CacheEntry) -> None:
-        if not entry.tenant_id:
-            raise _missing_tenant_error()
-        cache_key = f"{self.prefix}{uuid.uuid4()}"
-        data = {
-            "query_text": "",
-            "tenant_id": entry.tenant_id,
-            "acl": ",".join(sorted(entry.acl)),
-            "model_profile": entry.model_profile,
-            "response_mode": entry.response_mode,
-            "answer_text": entry.answer_text,
-            "citations": json.dumps(entry.citations),
-            "referenced_document_versions": json.dumps(entry.referenced_document_versions),
-            "cost_usd": entry.cost_usd,
-            "latency_ms": entry.latency_ms,
-            "created_at": int(entry.created_at.timestamp()),
-            "expires_at": int(entry.expires_at.timestamp()),
-            "hit_count": entry.hit_count,
-            "query_embedding": ",".join(str(f) for f in entry.query_embedding),
-        }
-        self.redis.hset(cache_key, mapping=data)
-        ttl = max(int((entry.expires_at - datetime.now(UTC)).total_seconds()), 1)
-        self.redis.expire(cache_key, ttl)
-        # The RediSearch index updates automatically via the configured key prefix.
+        if not entry.tenant_id or not entry.tenant_id.strip():
+            msg = "cache entry requires a tenant"
+            raise ValueError(msg)
+        if entry.citations and not has_complete_references(entry):
+            msg = "cache entry requires complete referenced document versions"
+            raise ValueError(msg)
 
-    async def invalidate_document(self, document_id: str, version: int) -> int:
-        # Referenced document versions are stored as a JSON string in each cache entry.
-        # Full document-version invalidation requires an inverse index of document
-        # versions to cache keys; for now this method records the invalidation status.
-        self.last_status = "invalidated"
-        return 0
+        now = datetime.now(UTC)
+        ttl = max(int((entry.expires_at - now).total_seconds()), 1)
+        cache_key = f"{self.prefix}{entry.tenant_id}:{uuid.uuid4()}"
+        data = _prepare_entry_data(entry)
+        reverse_keys = self._reverse_set_keys(entry)
+        set_ttls = await self._resolve_set_ttls(reverse_keys, ttl)
+
+        pipeline = self.redis.pipeline(transaction=True)
+        try:
+            pipeline.hset(cache_key, mapping=data)
+            pipeline.expire(cache_key, ttl)
+
+            for ver_key, doc_key in reverse_keys:
+                pipeline.sadd(ver_key, cache_key)
+                pipeline.expire(ver_key, set_ttls[ver_key])
+                pipeline.sadd(doc_key, cache_key)
+                pipeline.expire(doc_key, set_ttls[doc_key])
+
+            await _maybe_await(pipeline.execute())
+        except Exception:
+            with contextlib.suppress(Exception):
+                await _maybe_await(self.redis.delete(cache_key))
+            for ver_key, doc_key in reverse_keys:
+                with contextlib.suppress(Exception):
+                    await _maybe_await(self.redis.srem(ver_key, cache_key))
+                with contextlib.suppress(Exception):
+                    await _maybe_await(self.redis.srem(doc_key, cache_key))
+            raise
+
+    async def invalidate_document(
+        self, tenant_id: str, document_id: str, version: int | None = None
+    ) -> int:
+        if not tenant_id or not tenant_id.strip():
+            msg = "tenant_id is required"
+            raise ValueError(msg)
+        if not document_id or not document_id.strip():
+            msg = "document_id is required"
+            raise ValueError(msg)
+
+        if version is not None:
+            deleted_count = await self._invalidate_version(tenant_id, document_id, version)
+        else:
+            deleted_count = await self._invalidate_all(tenant_id, document_id)
+
+        self.last_status = "invalidated" if deleted_count else "miss"
+        return deleted_count

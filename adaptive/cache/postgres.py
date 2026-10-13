@@ -105,14 +105,35 @@ class PostgresCacheStore(CacheStore):
         )
         self.session.flush()
 
-    async def invalidate_document(self, document_id: str, version: int) -> int:
+    async def invalidate_document(
+        self, tenant_id: str, document_id: str | None = None, version: int | None = None
+    ) -> int:
         now = datetime.now(UTC)
+        if isinstance(document_id, int) and version is None:
+            doc_id = tenant_id
+            ver: int | None = document_id
+            t_id: str | None = None
+        else:
+            doc_id = document_id or ""
+            ver = version
+            t_id = tenant_id
+
         entries = self.session.scalars(select(CacheModel)).all()
         count = 0
         for entry in entries:
-            if entry.referenced_document_versions.get(document_id) == version:
-                entry.expires_at = now
-                count += 1
+            if t_id is not None and entry.tenant_id != t_id:
+                continue
+            if not doc_id:
+                continue
+            refs = entry.referenced_document_versions or {}
+            if doc_id not in refs:
+                continue
+            if ver is not None and refs.get(doc_id) != ver:
+                continue
+            if entry.expires_at is not None and _utc(entry.expires_at) <= now:
+                continue
+            entry.expires_at = now
+            count += 1
         self.session.flush()
         self.last_status = "invalidated" if count else "miss"
         return count
@@ -122,15 +143,18 @@ class PostgresCacheStore(CacheStore):
         if not references:
             return True
         for document_id, version in references.items():
-            active = self.session.scalar(
-                select(DocumentVersion.id).where(
+            active_row = self.session.scalar(
+                select(DocumentVersion).where(
                     DocumentVersion.document_id == document_id,
                     DocumentVersion.version == int(version),
                     DocumentVersion.tenant_id == request.context.tenant_id,
                     DocumentVersion.status == "active",
                 )
             )
-            if active is None:
+            if active_row is None:
+                return False
+            active_acl = set(active_row.acl) if active_row.acl else set()
+            if not active_acl.issubset(request.context.acl):
                 return False
         return True
 
