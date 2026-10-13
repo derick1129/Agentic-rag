@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import inspect
+import logging
 import tempfile
 import uuid
 from dataclasses import dataclass, field
@@ -392,6 +393,7 @@ class IngestionService:
         self.indexer = indexer
         self.max_attempts = max_attempts
         self._memory_documents: dict[str, _MemoryDocument] = {}
+        self._invalidation_targets: dict[str, tuple[str, str, int]] = {}
 
     async def submit(
         self,
@@ -631,7 +633,10 @@ class IngestionService:
         )
         if self.session is not None and hasattr(self.session, "commit"):
             self.session.commit()
-        return job
+        inval = self._invalidation_targets.pop(job.id, None)
+        if inval is not None:
+            t_id, d_id, ver = inval
+            await self._safe_invalidate(t_id, d_id, ver)
 
     async def _transition_stage(
         self,
@@ -1070,3 +1075,28 @@ class IngestionService:
 
     def active_chunk_count(self, document_id: str) -> int:
         return len(self._memory_documents[document_id].chunks)
+
+    async def delete_document(self, document_id: str, context: RequestContext) -> None:
+        if self.documents is not None and hasattr(self.documents, "deactivate"):
+            await _maybe_await(self.documents.deactivate(document_id, context))
+        elif document_id in self._memory_documents:
+            doc = self._memory_documents[document_id]
+            if doc.tenant_id == context.tenant_id:
+                doc.status = "deleted"
+        if self.session is not None:
+            self.session.commit()
+        await self._safe_invalidate(context.tenant_id, document_id, None)
+
+    async def _safe_invalidate(
+        self, tenant_id: str, document_id: str, version: int | None = None
+    ) -> None:
+        if self.cache_service is None:
+            return
+        try:
+            res = self.cache_service.invalidate_document(tenant_id, document_id, version)
+            await _maybe_await(res)
+        except Exception as exc:
+            logger.warning(
+                "Cache invalidation failed after state transition: %s",
+                type(exc).__name__,
+            )

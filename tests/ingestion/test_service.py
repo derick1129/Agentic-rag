@@ -326,3 +326,99 @@ async def test_service_persists_and_activates_replacement_versions():
         ).all()
         assert replacement_done.status == IngestionStatus.ACTIVE
         assert [version.status for version in versions] == ["replaced", "active"]
+
+
+class FakeCacheService:
+    def __init__(self, should_fail: bool = False) -> None:
+        self.calls: list[tuple[str, str, int | None]] = []
+        self.should_fail = should_fail
+
+    async def invalidate_document(
+        self, tenant_id: str, document_id: str, version: int | None = None
+    ) -> int:
+        if self.should_fail:
+            msg = "Redis connection lost"
+            raise RuntimeError(msg)
+        self.calls.append((tenant_id, document_id, version))
+        return 1
+
+
+@pytest.mark.asyncio
+async def test_ingestion_invalidates_cache_on_version_replacement():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        session.execute(text("DROP INDEX ix_document_versions_active"))
+        session.execute(
+            text(
+                "CREATE UNIQUE INDEX ix_document_versions_active ON document_versions "
+                "(document_id) WHERE status = 'active'"
+            )
+        )
+        session.commit()
+        cache = FakeCacheService()
+        service = IngestionService(session=session, cache_service=cache)
+        context = RequestContext(tenant_id="tenant-1", subject_id="user-1")
+
+        first = await service.submit(FakeSource(b"# Guide\n\nVersion one"), context)
+        first_done = await service.process(first.id)
+        replacement = await service.submit(FakeSource(b"# Guide\n\nVersion two"), context)
+        replacement_done = await service.process(replacement.id)
+
+        assert replacement_done.status == IngestionStatus.ACTIVE
+        assert (context.tenant_id, first_done.document_id, 1) in cache.calls
+
+
+@pytest.mark.asyncio
+async def test_ingestion_invalidates_cache_on_document_deletion():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        session.execute(text("DROP INDEX ix_document_versions_active"))
+        session.execute(
+            text(
+                "CREATE UNIQUE INDEX ix_document_versions_active ON document_versions "
+                "(document_id) WHERE status = 'active'"
+            )
+        )
+        session.commit()
+        cache = FakeCacheService()
+        service = IngestionService(session=session, cache_service=cache)
+        context = RequestContext(tenant_id="tenant-1", subject_id="user-1")
+
+        first = await service.submit(FakeSource(b"# Guide\n\nVersion one"), context)
+        first_done = await service.process(first.id)
+
+        await service.delete_document(first_done.document_id, context)
+        assert (context.tenant_id, first_done.document_id, None) in cache.calls
+
+
+@pytest.mark.asyncio
+async def test_ingestion_invalidation_failure_does_not_fail_commit_and_logs_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        session.execute(text("DROP INDEX ix_document_versions_active"))
+        session.execute(
+            text(
+                "CREATE UNIQUE INDEX ix_document_versions_active ON document_versions "
+                "(document_id) WHERE status = 'active'"
+            )
+        )
+        session.commit()
+        cache = FakeCacheService(should_fail=True)
+        service = IngestionService(session=session, cache_service=cache)
+        context = RequestContext(tenant_id="tenant-1", subject_id="user-1")
+
+        first = await service.submit(FakeSource(b"# Guide\n\nVersion one"), context)
+        await service.process(first.id)
+        replacement = await service.submit(FakeSource(b"# Guide\n\nVersion two"), context)
+
+        with caplog.at_level("WARNING"):
+            replacement_done = await service.process(replacement.id)
+
+        assert replacement_done.status == IngestionStatus.ACTIVE
+        assert any("Cache invalidation failed" in record.message for record in caplog.records)
+        assert all(context.tenant_id not in record.message for record in caplog.records)

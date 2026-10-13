@@ -370,7 +370,9 @@ class CacheStore(Protocol):
 
     async def put(self, entry: CacheEntry) -> None: ...
 
-    async def invalidate_document(self, document_id: str, version: int) -> int: ...
+    async def invalidate_document(
+        self, tenant_id: str, document_id: str, version: int | None = None
+    ) -> int: ...
 
 
 @runtime_checkable
