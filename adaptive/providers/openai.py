@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Sequence
+import logging
+from typing import TYPE_CHECKING, Any
 
 from openai import AsyncOpenAI
-from pydantic import BaseModel
 
 from adaptive.interfaces import EmbeddingProvider, Generator
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 
 class OpenAIEmbeddingProvider(EmbeddingProvider):
@@ -46,8 +53,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
             kwargs["extra_body"] = {"input_type": effective}
         response = await self.client.embeddings.create(**kwargs)
         # The response data is a list of objects with an embedding attribute
-        embeddings = [item.embedding for item in response.data]
-        return embeddings
+        return [item.embedding for item in response.data]
 
     @property
     def dimensions(self) -> int:
@@ -88,23 +94,23 @@ class OpenAIGenerationProvider(Generator):
     ) -> BaseModel:
         # First attempt: OpenAI structured outputs API (.beta.chat.completions.parse)
         try:
-            response = await self.client.beta.chat.completions.parse(
+            parsed_response = await self.client.beta.chat.completions.parse(
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 response_format=schema,
                 max_tokens=max_tokens,
             )
-            if response.usage:
+            if parsed_response.usage:
                 self.last_usage = {
-                    "tokens": response.usage.total_tokens,
-                    "total_tokens": response.usage.total_tokens,
+                    "tokens": parsed_response.usage.total_tokens,
+                    "total_tokens": parsed_response.usage.total_tokens,
                 }
-            parsed = response.choices[0].message.parsed
+            parsed = parsed_response.choices[0].message.parsed
             if parsed is not None:
                 return parsed
         except Exception:
-            # Fallback for providers (e.g. NVIDIA NIM / local proxies) that do not support .beta parse
-            pass
+            # Fallback for providers (e.g. NVIDIA NIM / local proxies) without .beta parse
+            logger.debug("Structured parse failed; falling back to JSON completion", exc_info=True)
 
         # Fallback: Instruct model to return JSON adhering to schema
         schema_json = json.dumps(schema.model_json_schema())

@@ -4,13 +4,31 @@ from __future__ import annotations
 
 import inspect
 import math
-from typing import Any
+from typing import TYPE_CHECKING, Protocol, TypeVar
 
-from adaptive.interfaces import RouteDecision, RouteSource
+from adaptive.interfaces import (
+    Budget,
+    RequestContext,
+    RouteDecision,
+    RouteDepth,
+    RouteSource,
+    RouteTool,
+)
 from adaptive.routers.contracts import QueryContext
 
+if TYPE_CHECKING:
+    from collections.abc import Awaitable
 
-async def _maybe(value: Any) -> Any:
+T = TypeVar("T")
+
+
+class _Embedder(Protocol):
+    def embed(
+        self, texts: list[str], *, input_type: str | None = None
+    ) -> Awaitable[list[list[float]]] | list[list[float]]: ...
+
+
+async def _maybe(value: Awaitable[T] | T) -> T:
     return await value if inspect.isawaitable(value) else value
 
 
@@ -27,16 +45,26 @@ def _cosine(left: list[float], right: list[float]) -> float:
 class EmbeddingRouter:
     """Choose the route represented by the closest labeled embedding seed."""
 
-    def __init__(self, embedder: Any, seeds: dict[str, tuple[Any, Any, list[float]]]) -> None:
+    def __init__(
+        self,
+        embedder: _Embedder,
+        seeds: dict[str, tuple[RouteDepth, RouteTool, list[float]]],
+    ) -> None:
         self.embedder = embedder
         self.seeds = seeds
 
     async def route(
-        self, query_context: QueryContext | str, context: Any = None, budget: Any = None
+        self,
+        query_context: QueryContext | str,
+        context: RequestContext | None = None,
+        budget: Budget | None = None,
     ) -> RouteDecision:
         if not isinstance(query_context, QueryContext):
             query_context = QueryContext(
-                query=query_context, request_context=context, budget=budget
+                query=query_context,
+                request_context=context
+                or RequestContext(tenant_id="default", subject_id="anonymous"),
+                budget=budget or Budget(),
             )
         vectors = await _maybe(self.embedder.embed([query_context.query], input_type="query"))
         query_vector = vectors[0]

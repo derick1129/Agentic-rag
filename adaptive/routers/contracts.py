@@ -25,7 +25,7 @@ class RoutingPolicy(BaseModel):
     model_profile: str = "default"
     response_mode: str = "answer"
 
-    def forced_decision(self):
+    def forced_decision(self) -> tuple[RouteDepth, RouteTool] | None:
         if self.forced_depth is None and self.forced_tool is None:
             return None
         depth = self.forced_depth or RouteDepth.SINGLE_HOP

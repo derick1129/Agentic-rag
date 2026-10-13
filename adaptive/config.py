@@ -37,7 +37,7 @@ class Settings(BaseSettings):
 
     @field_validator("database_url", mode="before")
     @classmethod
-    def normalize_database_url(cls, v: str, info: ValidationInfo) -> str:
+    def normalize_database_url(cls, v: str) -> str:
         parsed = urlparse(v)
         query = parse_qs(parsed.query)
         query.pop("channel_binding", None)
@@ -80,9 +80,7 @@ class Settings(BaseSettings):
     generation_max_retries: int = Field(default=3, alias="GENERATION_MAX_RETRIES", ge=0, le=10)
 
     # NVIDIA NIMS Fallback
-    nims_base_url: str = Field(
-        default="https://integrate.api.nvidia.com/v1", alias="NIMS_BASE_URL"
-    )
+    nims_base_url: str = Field(default="https://integrate.api.nvidia.com/v1", alias="NIMS_BASE_URL")
     nims_api_key: str = Field(default="", alias="NIMS_API_KEY")
     # Optional: NIMS-specific model overrides for fallback
     nims_embedding_model: str = Field(

@@ -3,12 +3,30 @@
 from __future__ import annotations
 
 import inspect
-from typing import Any
+from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from pydantic import BaseModel, Field
 
-from adaptive.interfaces import RouteDecision, RouteDepth, RouteSource, RouteTool
+from adaptive.interfaces import (
+    Budget,
+    RequestContext,
+    RouteDecision,
+    RouteDepth,
+    RouteSource,
+    RouteTool,
+)
 from adaptive.routers.contracts import QueryContext
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
+T = TypeVar("T")
+
+
+class _StructuredGenerator(Protocol):
+    def generate_structured(
+        self, prompt: str, schema: type[BaseModel], max_tokens: int
+    ) -> Awaitable[object] | object: ...
 
 
 class RouteModelOutput(BaseModel):
@@ -18,27 +36,36 @@ class RouteModelOutput(BaseModel):
     rationale: str | None = None
 
 
-async def _maybe(value: Any) -> Any:
+async def _maybe(value: Awaitable[T] | T) -> T:
     return await value if inspect.isawaitable(value) else value
 
 
 def _context(
-    query_context: QueryContext | str, context: Any = None, budget: Any = None
+    query_context: QueryContext | str,
+    context: RequestContext | None = None,
+    budget: Budget | None = None,
 ) -> QueryContext:
     if isinstance(query_context, QueryContext):
         return query_context
-    return QueryContext(query=query_context, request_context=context, budget=budget)
+    return QueryContext(
+        query=query_context,
+        request_context=context or RequestContext(tenant_id="default", subject_id="anonymous"),
+        budget=budget or Budget(),
+    )
 
 
 class LLMRouter:
     """Convert only validated structured model output into a RouteDecision."""
 
-    def __init__(self, generator: Any, *, max_tokens: int = 128) -> None:
+    def __init__(self, generator: _StructuredGenerator, *, max_tokens: int = 128) -> None:
         self.generator = generator
         self.max_tokens = max_tokens
 
     async def route(
-        self, query_context: QueryContext | str, context: Any = None, budget: Any = None
+        self,
+        query_context: QueryContext | str,
+        context: RequestContext | None = None,
+        budget: Budget | None = None,
     ) -> RouteDecision:
         query_context = _context(query_context, context, budget)
         prompt = (
