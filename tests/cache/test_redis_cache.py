@@ -417,16 +417,10 @@ async def test_exact_invalidation_count() -> None:
     store = RedisCacheStore(client, prefix="cache:")  # type: ignore[arg-type]
 
     # Two entries referencing doc-1:1
-    await store.put(
-        _make_entry(tenant="acme", embedding=[1.0, 0.0], references={"doc-1": 1})
-    )
-    await store.put(
-        _make_entry(tenant="acme", embedding=[0.0, 1.0], references={"doc-1": 1})
-    )
+    await store.put(_make_entry(tenant="acme", embedding=[1.0, 0.0], references={"doc-1": 1}))
+    await store.put(_make_entry(tenant="acme", embedding=[0.0, 1.0], references={"doc-1": 1}))
     # One entry referencing doc-2:1
-    await store.put(
-        _make_entry(tenant="acme", embedding=[0.7, 0.7], references={"doc-2": 1})
-    )
+    await store.put(_make_entry(tenant="acme", embedding=[0.7, 0.7], references={"doc-2": 1}))
 
     count = await store.invalidate_document("acme", "doc-1", 1)
     assert count == EXPECTED_COUNT_TWO
@@ -468,9 +462,10 @@ async def test_index_write_failure_leaves_no_servable_entry() -> None:
     entry = _make_entry(tenant="acme", references={"doc-1": 1})
 
     # Cause pipeline.execute to fail
-    with patch.object(
-        FakeRedisPipeline, "execute", side_effect=RuntimeError("connection error")
-    ), pytest.raises(RuntimeError, match="connection error"):
+    with (
+        patch.object(FakeRedisPipeline, "execute", side_effect=RuntimeError("connection error")),
+        pytest.raises(RuntimeError, match="connection error"),
+    ):
         await store.put(entry)
 
     # Assert no cache hash key was left behind in Redis

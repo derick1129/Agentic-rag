@@ -69,9 +69,10 @@ def has_complete_references(entry: CacheEntry) -> bool:
     )
 
 
-@runtime_checkable
-class PostgresReferenceChecker(ReferenceChecker, Protocol):
+class PostgresReferenceChecker(ReferenceChecker):
     """PostgreSQL-backed reference checker validating active document versions and ACLs."""
+
+    session_factory: Callable[[], Session]
 
     def __init__(self, session_factory: Callable[[], Session]) -> None:
         self.session_factory = session_factory

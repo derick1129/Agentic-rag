@@ -6,9 +6,7 @@ import fnmatch
 import os
 from typing import Any
 
-os.environ.setdefault(
-    "DATABASE_URL", "postgresql+psycopg://user:pass@localhost:5432/testdb"
-)
+os.environ.setdefault("DATABASE_URL", "postgresql+psycopg://user:pass@localhost:5432/testdb")
 os.environ.setdefault("OPENSEARCH_URL", "http://localhost:9200")
 
 from contextlib import asynccontextmanager
@@ -215,16 +213,12 @@ class FakeRetriever:
 
 
 class FakeEmbeddingProvider:
-    async def embed(
-        self, texts: list[str], *, input_type: str | None = None
-    ) -> list[list[float]]:
+    async def embed(self, texts: list[str], *, input_type: str | None = None) -> list[list[float]]:
         return [[1.0, 0.0] for _ in texts]
 
 
 class FakeGenerationProvider:
-    async def generate(
-        self, prompt: str, max_tokens: int, temperature: float = 0.0
-    ) -> str:
+    async def generate(self, prompt: str, max_tokens: int, temperature: float = 0.0) -> str:
         return "Returns are accepted within 30 days [1]."
 
 
@@ -233,12 +227,8 @@ def cache_app_fixture(monkeypatch: pytest.MonkeyPatch):
     engine, session = _setup_db()
     redis_client = FakeRedisClient()
     store = RedisCacheStore(redis_client, prefix="cache:")  # type: ignore[arg-type]
-    checker = PostgresReferenceChecker(
-        session_factory=lambda: Session(engine)
-    )
-    cache_service = SemanticCacheService(
-        store=store, enabled=True, reference_checker=checker
-    )
+    checker = PostgresReferenceChecker(session_factory=lambda: Session(engine))
+    cache_service = SemanticCacheService(store=store, enabled=True, reference_checker=checker)
 
     @asynccontextmanager
     async def fake_lifespan(app: FastAPI):
@@ -260,9 +250,7 @@ def cache_app_fixture(monkeypatch: pytest.MonkeyPatch):
 
 def test_query_cache_hit_and_post_update_miss(cache_app_fixture: tuple[Any, ...]) -> None:
     app, session, _cache_service, _store = cache_app_fixture
-    context = RequestContext(
-        tenant_id="acme", subject_id="user-1", acl=frozenset({"support"})
-    )
+    context = RequestContext(tenant_id="acme", subject_id="user-1", acl=frozenset({"support"}))
     app.dependency_overrides[authenticate_request] = lambda: context
 
     client = TestClient(app)
@@ -297,9 +285,7 @@ def test_query_cache_hit_and_post_update_miss(cache_app_fixture: tuple[Any, ...]
 
 def test_query_cache_tenant_and_acl_isolation(cache_app_fixture: tuple[Any, ...]) -> None:
     app, _session, _cache_service, _store = cache_app_fixture
-    acme_context = RequestContext(
-        tenant_id="acme", subject_id="user-1", acl=frozenset({"support"})
-    )
+    acme_context = RequestContext(tenant_id="acme", subject_id="user-1", acl=frozenset({"support"}))
     app.dependency_overrides[authenticate_request] = lambda: acme_context
 
     client = TestClient(app)
@@ -333,9 +319,7 @@ def test_query_cache_tenant_and_acl_isolation(cache_app_fixture: tuple[Any, ...]
 @pytest.mark.asyncio
 async def test_query_cache_eager_invalidation(cache_app_fixture: tuple[Any, ...]) -> None:
     app, _session, cache_service, _store = cache_app_fixture
-    context = RequestContext(
-        tenant_id="acme", subject_id="user-1", acl=frozenset({"support"})
-    )
+    context = RequestContext(tenant_id="acme", subject_id="user-1", acl=frozenset({"support"}))
     app.dependency_overrides[authenticate_request] = lambda: context
 
     client = TestClient(app)

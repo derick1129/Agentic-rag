@@ -382,9 +382,7 @@ async def test_postgres_reference_checker_active_version_and_acl_semantics(
     session: Session,
 ) -> None:
     _active_document(session, document_id="doc-1", version=1)
-    checker = PostgresReferenceChecker(
-        session_factory=lambda: Session(bind=session.connection())
-    )
+    checker = PostgresReferenceChecker(session_factory=lambda: Session(bind=session.connection()))
 
     # Active and ACL matches exactly
     assert await checker.are_active("acme", frozenset({"support"}), {"doc-1": 1}) is True

@@ -8,7 +8,7 @@ import json
 import math
 import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar, cast
 
 from redis.commands.search.field import NumericField, TagField, TextField, VectorField
 from redis.commands.search.indexDefinition import IndexDefinition, IndexType
@@ -18,11 +18,17 @@ from adaptive.cache.contracts import CacheEntry, CacheHit, CacheLookup, CacheSto
 from adaptive.cache.references import has_complete_references
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
     from redis.client import Redis
 
+T = TypeVar("T")
 
-async def _maybe_await(value: object) -> object:
-    return await value if inspect.isawaitable(value) else value
+
+async def _maybe_await(value: T | Awaitable[T]) -> T:
+    if inspect.isawaitable(value):
+        return cast("T", await value)
+    return value
 
 
 def _utc(value: datetime) -> datetime:
@@ -156,14 +162,14 @@ class RedisCacheStore(CacheStore):
 
         raw_created = _get("created_at")
         created_at = (
-            datetime.fromtimestamp(int(raw_created), tz=UTC)
+            datetime.fromtimestamp(int(str(raw_created)), tz=UTC)
             if raw_created is not None
             else datetime.now(UTC)
         )
 
         raw_expires = _get("expires_at")
         expires_at = (
-            datetime.fromtimestamp(int(raw_expires), tz=UTC)
+            datetime.fromtimestamp(int(str(raw_expires)), tz=UTC)
             if raw_expires is not None
             else datetime.max.replace(tzinfo=UTC)
         )
@@ -178,11 +184,11 @@ class RedisCacheStore(CacheStore):
             "answer_text": _get("answer_text", ""),
             "citations": citations,
             "referenced_document_versions": refs,
-            "cost_usd": float(_get("cost_usd", 0.0) or 0.0),
-            "latency_ms": int(_get("latency_ms", 0) or 0),
+            "cost_usd": float(str(_get("cost_usd", 0.0) or 0.0)),
+            "latency_ms": int(str(_get("latency_ms", 0) or 0)),
             "created_at": created_at,
             "expires_at": expires_at,
-            "hit_count": int(_get("hit_count", 0) or 0),
+            "hit_count": int(str(_get("hit_count", 0) or 0)),
         }
 
     def _reverse_set_keys(self, entry: CacheEntry) -> list[tuple[str, str]]:
@@ -213,20 +219,15 @@ class RedisCacheStore(CacheStore):
             if key.startswith(prefix):
                 res = await _maybe_await(self.redis.delete(key))
                 if res:
-                    deleted += int(res)
+                    deleted += int(str(res))
         return deleted
 
-    async def _invalidate_version(
-        self, tenant_id: str, document_id: str, version: int
-    ) -> int:
+    async def _invalidate_version(self, tenant_id: str, document_id: str, version: int) -> int:
         ver_set_key = f"{self.prefix}ref:{tenant_id}:{document_id}:v:{int(version)}"
         doc_set_key = f"{self.prefix}ref:{tenant_id}:{document_id}:all"
         raw_members = await _maybe_await(self.redis.smembers(ver_set_key))
         members = raw_members if isinstance(raw_members, set | list) else set()
-        keys = [
-            m.decode("utf-8") if isinstance(m, bytes) else str(m)
-            for m in members
-        ]
+        keys = [m.decode("utf-8") if isinstance(m, bytes) else str(m) for m in members]
         deleted_count = await self._delete_tenant_keys(keys, f"{self.prefix}{tenant_id}:")
         await _maybe_await(self.redis.delete(ver_set_key))
         if keys:
@@ -237,10 +238,7 @@ class RedisCacheStore(CacheStore):
         doc_set_key = f"{self.prefix}ref:{tenant_id}:{document_id}:all"
         raw_members = await _maybe_await(self.redis.smembers(doc_set_key))
         members = raw_members if isinstance(raw_members, set | list) else set()
-        keys = [
-            m.decode("utf-8") if isinstance(m, bytes) else str(m)
-            for m in members
-        ]
+        keys = [m.decode("utf-8") if isinstance(m, bytes) else str(m) for m in members]
         deleted_count = await self._delete_tenant_keys(keys, f"{self.prefix}{tenant_id}:")
         await _maybe_await(self.redis.delete(doc_set_key))
         pattern = f"{self.prefix}ref:{tenant_id}:{document_id}:v:*"
@@ -335,11 +333,7 @@ class RedisCacheStore(CacheStore):
                 else []
             ),
             tenant_id=str(best_entry["tenant_id"]),
-            acl=(
-                best_entry["acl"]
-                if isinstance(best_entry["acl"], frozenset)
-                else frozenset()
-            ),
+            acl=(best_entry["acl"] if isinstance(best_entry["acl"], frozenset) else frozenset()),
             answer_text=str(best_entry["answer_text"]),
             citations=citations if isinstance(citations, list) else [],
             model_profile=str(best_entry["model_profile"]),
