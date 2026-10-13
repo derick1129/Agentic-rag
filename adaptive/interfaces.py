@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import time
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Literal, Protocol, TypeVar, runtime_checkable
+from typing import Any, BinaryIO, Literal, Protocol, TypeVar, runtime_checkable
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator
 from pydantic_core import PydanticCustomError
@@ -21,6 +21,9 @@ from pydantic_core import PydanticCustomError
 
 
 class IngestionStatus(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    RETRY_WAIT = "retry_wait"
     RECEIVED = "received"
     PARSING = "parsing"
     CHUNKING = "chunking"
@@ -28,6 +31,7 @@ class IngestionStatus(StrEnum):
     INDEXING = "indexing"
     ACTIVE = "active"
     FAILED = "failed"
+    DEAD_LETTER = "dead_letter"
 
 
 class DocumentStatus(StrEnum):
@@ -416,6 +420,17 @@ class DocumentSource(Protocol):
 
 
 @runtime_checkable
+class SourceStorage(Protocol):
+    """Durable source payload storage protocol."""
+
+    def store(self, job_id: str, payload: bytes) -> str: ...
+
+    def open(self, source_key: str) -> BinaryIO: ...
+
+    def delete(self, source_key: str) -> None: ...
+
+
+@runtime_checkable
 class Parser(Protocol):
     """Parser protocol - converts raw bytes to parsed document."""
 
@@ -486,14 +501,38 @@ class IngestionJob(BaseModel):
 
     id: str
     tenant_id: str
-    document_id: str | None
+    document_id: str | None = None
     status: IngestionStatus
     current_stage: str
     attempts: int = 0
     error_code: str | None = None
     error_message: str | None = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    source_key: str | None = None
+    filename: str | None = None
+    mime_type: str | None = None
+    source_uri: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    subject_id: str = "system"
+    acl: frozenset[str] = Field(default_factory=frozenset)
+    idempotency_key: str | None = None
+    payload_hash: str | None = None
+    available_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    worker_id: str | None = None
+    lease_token: str | None = None
+    lease_expires_at: datetime | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class ClaimedIngestionJob(BaseModel):
+    """Durable ingestion job claimed under a worker lease."""
+
+    job: IngestionJob
+    worker_id: str
+    lease_token: str
+    lease_expires_at: datetime
+
+    model_config = {"frozen": True}
 
 
 # =============================================================================
@@ -615,6 +654,7 @@ __all__ = [
     "EmbeddingProvider",
     "Guardrail",
     "DocumentSource",
+    "SourceStorage",
     "Parser",
     "DocumentRepository",
     "ChunkRepository",
@@ -625,6 +665,7 @@ __all__ = [
     "ChunkDraft",
     "ChunkPolicy",
     "IngestionJob",
+    "ClaimedIngestionJob",
     "Document",
     "ChunkRecord",
     "DocumentCreateParams",
