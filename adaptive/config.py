@@ -37,7 +37,7 @@ class Settings(BaseSettings):
 
     @field_validator("database_url", mode="before")
     @classmethod
-    def normalize_database_url(cls, v: str, info: ValidationInfo) -> str:
+    def normalize_database_url(cls, v: str, info: ValidationInfo) -> str:  # noqa: ARG003
         parsed = urlparse(v)
         query = parse_qs(parsed.query)
         query.pop("channel_binding", None)
@@ -80,9 +80,7 @@ class Settings(BaseSettings):
     generation_max_retries: int = Field(default=3, alias="GENERATION_MAX_RETRIES", ge=0, le=10)
 
     # NVIDIA NIMS Fallback
-    nims_base_url: str = Field(
-        default="https://integrate.api.nvidia.com/v1", alias="NIMS_BASE_URL"
-    )
+    nims_base_url: str = Field(default="https://integrate.api.nvidia.com/v1", alias="NIMS_BASE_URL")
     nims_api_key: str = Field(default="", alias="NIMS_API_KEY")
     # Optional: NIMS-specific model overrides for fallback
     nims_embedding_model: str = Field(
@@ -211,6 +209,22 @@ class Settings(BaseSettings):
     ingestion_chunk_overlap_tokens: int = Field(
         default=50, alias="INGESTION_CHUNK_OVERLAP_TOKENS", ge=0, le=1024
     )
+    ingestion_max_attempts: int = Field(default=5, alias="INGESTION_MAX_ATTEMPTS", ge=1, le=100)
+    ingestion_retry_base_seconds: int = Field(
+        default=2, alias="INGESTION_RETRY_BASE_SECONDS", ge=1, le=3600
+    )
+    ingestion_retry_max_seconds: int = Field(
+        default=300, alias="INGESTION_RETRY_MAX_SECONDS", ge=1, le=86400
+    )
+    ingestion_job_lease_seconds: int = Field(
+        default=300, alias="INGESTION_JOB_LEASE_SECONDS", ge=1, le=86400
+    )
+    ingestion_poll_interval_seconds: float = Field(
+        default=1.0, alias="INGESTION_POLL_INTERVAL_SECONDS", gt=0.0, le=300.0
+    )
+    ingestion_heartbeat_interval_seconds: float | None = Field(
+        default=None, alias="INGESTION_HEARTBEAT_INTERVAL_SECONDS", gt=0.0, le=3600.0
+    )
 
     @field_validator("ingestion_chunk_overlap_tokens")
     @classmethod
@@ -218,6 +232,17 @@ class Settings(BaseSettings):
         max_tokens = info.data.get("ingestion_chunk_max_tokens", 512)
         if v >= max_tokens:
             raise PydanticCustomError("value_error", "overlap_tokens must be less than max_tokens")
+        return v
+
+    @field_validator("ingestion_retry_max_seconds")
+    @classmethod
+    def retry_max_at_least_base(cls, v: int, info: ValidationInfo) -> int:
+        base_seconds = info.data.get("ingestion_retry_base_seconds", 2)
+        if v < base_seconds:
+            raise PydanticCustomError(
+                "value_error",
+                "ingestion_retry_max_seconds must be >= ingestion_retry_base_seconds",
+            )
         return v
 
     # Retrieval
