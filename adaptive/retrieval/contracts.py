@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import math
-from collections.abc import Sequence
+from collections.abc import Awaitable, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -37,7 +37,7 @@ class EmbeddingProvider(Protocol):
 
     def embed(
         self, texts: Sequence[str], *, input_type: str | None = None
-    ) -> list[list[float]]: ...
+    ) -> list[list[float]] | Awaitable[list[list[float]]]: ...
 
 
 class IndexWriter(Protocol):
@@ -72,9 +72,7 @@ class HashEmbeddingProvider:
     def dimensions(self) -> int:
         return self._dimensions
 
-    def embed(
-        self, texts: Sequence[str], *, input_type: str | None = None
-    ) -> list[list[float]]:
+    def embed(self, texts: Sequence[str], *, input_type: str | None = None) -> list[list[float]]:
         vectors: list[list[float]] = []
         for text in texts:
             values = []

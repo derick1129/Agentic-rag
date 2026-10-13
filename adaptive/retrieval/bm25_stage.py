@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
-import json
 from threading import Lock
-from typing import TYPE_CHECKING, Any, List, Sequence, Tuple
+from typing import TYPE_CHECKING
 
 from rank_bm25 import BM25Okapi
 
+from adaptive.db.models import Chunk as ChunkModel
+from adaptive.db.session import set_tenant_context
 from adaptive.interfaces import Chunk, RetrievalQuery
 from adaptive.retrieval.contracts import RetrievalStage, ScoredChunk
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from sqlalchemy.orm import Session
 
 
@@ -20,7 +23,7 @@ class BM25Stage(RetrievalStage):
 
     def __init__(
         self,
-        session_factory: Any,
+        session_factory: Callable[[], Session],
         *,
         k1: float = 1.5,
         b: float = 0.75,
@@ -38,10 +41,10 @@ class BM25Stage(RetrievalStage):
         self.b = b
         self.epsilon = epsilon
         # Mapping from tenant_id to (bm25_index, chunks, lock)
-        self._indices: dict[str, Tuple[BM25Okapi, List[Chunk], Lock]] = {}
+        self._indices: dict[str, tuple[BM25Okapi | None, list[Chunk], Lock]] = {}
         self._lock = Lock()  # Lock for the indices dictionary
 
-    def _get_or_create_index(self, tenant_id: str) -> Tuple[BM25Okapi, List[Chunk]]:
+    def _get_or_create_index(self, tenant_id: str) -> tuple[BM25Okapi | None, list[Chunk]]:
         """Get the BM25 index for a tenant, creating it if necessary."""
         with self._lock:
             if tenant_id in self._indices and self._indices[tenant_id][0] is not None:
@@ -60,34 +63,27 @@ class BM25Stage(RetrievalStage):
             # Load chunks for this tenant from the database
             session = self.session_factory()
             try:
-                from adaptive.db.session import set_tenant_context
-                # We need to import the Chunk model from the database
-                from adaptive.db.models import Chunk as ChunkModel
-
                 set_tenant_context(session, tenant_id)
                 chunks_orm = (
-                    session.query(ChunkModel)
-                    .filter(ChunkModel.tenant_id == tenant_id)
-                    .all()
+                    session.query(ChunkModel).filter(ChunkModel.tenant_id == tenant_id).all()
                 )
                 # Convert ORM chunks to interface Chunk
-                chunks: List[Chunk] = []
-                for chunk_orm in chunks_orm:
-                    chunks.append(
-                        Chunk(
-                            id=str(chunk_orm.id),
-                            document_id=str(chunk_orm.document_id),
-                            tenant_id=str(chunk_orm.tenant_id),
-                            version=int(chunk_orm.version),
-                            ordinal=int(chunk_orm.ordinal),
-                            text=chunk_orm.text,
-                            heading_path=chunk_orm.heading_path or [],
-                            page_number=chunk_orm.page_number,
-                            token_count=chunk_orm.token_count,
-                            metadata=chunk_orm.metadata_json or {},
-                            acl=frozenset(chunk_orm.acl or []),
-                        )
+                chunks: list[Chunk] = [
+                    Chunk(
+                        id=str(chunk_orm.id),
+                        document_id=str(chunk_orm.document_id),
+                        tenant_id=str(chunk_orm.tenant_id),
+                        version=int(chunk_orm.version),
+                        ordinal=int(chunk_orm.ordinal),
+                        text=chunk_orm.text,
+                        heading_path=chunk_orm.heading_path or [],
+                        page_number=chunk_orm.page_number,
+                        token_count=chunk_orm.token_count,
+                        metadata=chunk_orm.metadata_json or {},
+                        acl=frozenset(chunk_orm.acl or []),
                     )
+                    for chunk_orm in chunks_orm
+                ]
                 if not chunks:
                     with self._lock:
                         self._indices.pop(tenant_id, None)
@@ -109,7 +105,7 @@ class BM25Stage(RetrievalStage):
             elif tenant_id in self._indices:
                 del self._indices[tenant_id]
 
-    async def search(self, query: RetrievalQuery, limit: int) -> List[ScoredChunk]:
+    async def search(self, query: RetrievalQuery, limit: int) -> list[ScoredChunk]:
         tenant_id = query.context.tenant_id
         bm25_index, chunks = self._get_or_create_index(tenant_id)
         if bm25_index is None or not chunks:
@@ -120,14 +116,11 @@ class BM25Stage(RetrievalStage):
         # Get scores for all chunks
         scores = bm25_index.get_scores(tokenized_query)
         # Get the top `limit` chunks by score
-        # We'll get the indices of the top scores
         top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:limit]
-        results: List[ScoredChunk] = []
+        results: list[ScoredChunk] = []
         for idx in top_indices:
             chunk = chunks[idx]
             # The HybridRetrieverService will do further filtering by ACL and document_ids
-            # But we can also do some filtering here if we want to reduce the candidates.
-            # We'll leave it to the service for now.
             results.append(
                 ScoredChunk(
                     chunk=chunk,
