@@ -25,10 +25,19 @@ class FilesystemSourceStorage:
         *,
         max_bytes: int | None = None,
     ) -> None:
+        try:
+            settings = get_settings()
+            default_dir = settings.ingestion_temp_dir
+            default_max_mb = settings.ingestion_max_file_size_mb
+        except Exception:
+            default_dir = str(Path(tempfile.gettempdir()) / "adaptive_rag_ingestion")
+            default_max_mb = 50
+
+
         resolved_dir = (
             Path(base_dir).expanduser()
             if base_dir is not None
-            else Path(get_settings().ingestion_temp_dir).expanduser()
+            else Path(default_dir).expanduser()
         )
         resolved_dir.mkdir(parents=True, exist_ok=True)
         self.base_dir: Path = resolved_dir.resolve(strict=True)
@@ -36,8 +45,9 @@ class FilesystemSourceStorage:
         resolved_max_bytes = (
             max_bytes
             if max_bytes is not None
-            else get_settings().ingestion_max_file_size_mb * 1024 * 1024
+            else default_max_mb * 1024 * 1024
         )
+
         if resolved_max_bytes <= 0:
             raise ValueError("max_bytes must be positive")  # noqa: TRY003
         self.max_bytes: int = resolved_max_bytes

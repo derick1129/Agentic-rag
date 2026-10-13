@@ -535,6 +535,11 @@ class ClaimedIngestionJob(BaseModel):
     model_config = {"frozen": True}
 
 
+class IdempotencyConflictError(ValueError):
+    """Raised when an idempotency key is reused with a different payload."""
+
+
+
 # =============================================================================
 # Repository Protocols
 # =============================================================================
