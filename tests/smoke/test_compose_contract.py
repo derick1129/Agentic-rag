@@ -14,16 +14,16 @@ def test_compose_declares_required_services_health_checks_and_persistence() -> N
     compose = load_compose()
     services = compose["services"]
 
-    assert {"api", "postgres", "opensearch", "phoenix"} <= services.keys()
-    assert {"postgres_data", "opensearch_data", "phoenix_data"} <= compose["volumes"].keys()
+    assert {"api", "postgres", "redis", "phoenix"} <= services.keys()
+    assert {"uploads", "postgres_data", "redis_data", "phoenix_data"} <= compose["volumes"].keys()
 
-    for service_name in ("postgres", "opensearch", "phoenix"):
+    for service_name in ("postgres", "redis", "phoenix"):
         assert "healthcheck" in services[service_name]
 
     assert services["api"]["ports"] == ["${APP_PORT:-8000}:8000"]
     assert services["api"]["volumes"] == ["uploads:/tmp/adaptive_rag_ingestion"]
     assert services["postgres"]["volumes"] == ["postgres_data:/var/lib/postgresql/data"]
-    assert services["opensearch"]["volumes"] == ["opensearch_data:/usr/share/opensearch/data"]
+    assert services["redis"]["volumes"] == ["redis_data:/data"]
     assert services["phoenix"]["volumes"] == ["phoenix_data:/mnt/data"]
 
 
@@ -33,12 +33,13 @@ def test_api_depends_on_healthy_infrastructure_and_has_required_environment() ->
 
     assert api["depends_on"] == {
         "postgres": {"condition": "service_healthy"},
-        "opensearch": {"condition": "service_healthy"},
+        "redis": {"condition": "service_healthy"},
         "phoenix": {"condition": "service_healthy"},
     }
     assert {
         "DATABASE_URL",
-        "OPENSEARCH_URL",
+        "REDIS_HOST",
+        "REDIS_PORT",
         "PHOENIX_ENDPOINT",
         "APP_HOST",
         "APP_PORT",
