@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 import logging
 from typing import Any
 
@@ -33,6 +33,7 @@ from adaptive.retrieval.hybrid import HybridRetrieverService
 from adaptive.retrieval.retrieval_grader import RetrievalGrader, RetrievalGraderBridge
 from adaptive.retrieval.contracts import HashEmbeddingProvider
 from adaptive.cache.redis import RedisCacheStore
+from adaptive.cache.references import PostgresReferenceChecker
 from adaptive.cache.service import SemanticCacheService
 from adaptive.retrieval.bm25_stage import BM25Stage
 from adaptive.retrieval.neondb_dense import NeonDBDenseStage
@@ -178,9 +179,11 @@ async def lifespan(app: FastAPI):
             redis_client=_redis_client,
             similarity_threshold=settings.cache_similarity_threshold,
         )
+        checker = PostgresReferenceChecker(session_factory=SessionLocal)
         _cache_service = SemanticCacheService(
             store=_cache_store,
             enabled=True,
+            reference_checker=checker,
         )
     else:
         _cache_store = None
@@ -194,6 +197,7 @@ async def lifespan(app: FastAPI):
             session=session,
             embedding_provider=_embedding_provider,
             indexer=None,  # We are not using an indexer; chunks are stored via the chunk repository
+            cache_service=_cache_service,
         )
         
         # Initialize retrieval service with BM25 and dense stages
@@ -448,6 +452,8 @@ def create_app() -> FastAPI:
                         context=context,
                         route_depth=RouteDepth.SINGLE_HOP,
                         route_tool=RouteTool.VECTOR,
+                        model_profile="default",
+                        response_mode="direct",
                     )
                     hit = await _cache_service.lookup(lookup)
                     if hit is not None:
@@ -481,6 +487,7 @@ def create_app() -> FastAPI:
                 "text": chunk.text,
                 "score": chunk.score,
                 "document_id": getattr(chunk, 'document_id', None),
+                "version": int(getattr(chunk, 'version', 1) or 1),
                 "metadata": getattr(chunk, 'metadata', {}),
             })
         
@@ -512,7 +519,12 @@ def create_app() -> FastAPI:
                 )
                 answer_text = await _generation_provider.generate(prompt=prompt, max_tokens=1000, temperature=0.0)
                 citations = [
-                    {"citation_index": i + 1, "document_id": r.get("document_id"), "chunk_id": r["id"]}
+                    {
+                        "citation_index": i + 1,
+                        "document_id": r.get("document_id"),
+                        "chunk_id": r["id"],
+                        "version": int(r.get("version", 1)),
+                    }
                     for i, r in enumerate(results[:5])
                 ]
 
@@ -534,6 +546,11 @@ def create_app() -> FastAPI:
                 if _cache_service is not None and query_embedding is not None and answer_text:
                     try:
                         settings = get_settings()
+                        referenced_versions = {
+                            str(r["document_id"]): int(r.get("version", 1))
+                            for r in results[:5]
+                            if r.get("document_id")
+                        }
                         await _cache_service.put(
                             CacheEntry(
                                 query_embedding=query_embedding,
@@ -543,10 +560,11 @@ def create_app() -> FastAPI:
                                 citations=citations,
                                 model_profile="default",
                                 response_mode="direct",
-                                referenced_document_versions={},
+                                referenced_document_versions=referenced_versions,
                                 cost_usd=0.0,
                                 latency_ms=0.0,
-                                expires_at=datetime.now(timezone.utc) + timedelta(seconds=settings.cache_ttl_seconds),
+                                expires_at=datetime.now(UTC)
+                                + timedelta(seconds=settings.cache_ttl_seconds),
                             )
                         )
                     except Exception as ce:

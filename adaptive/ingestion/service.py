@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import inspect
+import logging
 import tempfile
 import uuid
 from dataclasses import dataclass, field
@@ -30,6 +31,8 @@ from adaptive.interfaces import (
     IngestionStatus,
     RequestContext,
 )
+
+logger = logging.getLogger("adaptive.ingestion")
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -60,6 +63,7 @@ class IngestionService:
         chunk_policy: ChunkPolicy | None = None,
         embedding_provider: Any = None,
         indexer: Any = None,
+        cache_service: Any = None,
     ) -> None:
         if session is not None:
             from adaptive.db.repositories import (
@@ -82,11 +86,13 @@ class IngestionService:
         self.chunk_policy = chunk_policy or ChunkPolicy()
         self.embedding_provider = embedding_provider
         self.indexer = indexer
+        self.cache_service = cache_service
         self._jobs: dict[str, IngestionJob] = {}
         self._sources: dict[str, Path] = {}
         self._payloads: dict[str, SourcePayload] = {}
         self._contexts: dict[str, RequestContext] = {}
         self._memory_documents: dict[str, _MemoryDocument] = {}
+        self._invalidation_targets: dict[str, tuple[str, str, int]] = {}
 
     async def submit(self, source: Any, context: RequestContext) -> IngestionJob:
         if hasattr(source, "read"):
@@ -176,12 +182,19 @@ class IngestionService:
             if job.status == IngestionStatus.ACTIVE:
                 self._payloads.pop(job.id, None)
                 self._contexts.pop(job.id, None)
+        await self._post_process_job(job)
+        return job
+
+    async def _post_process_job(self, job: IngestionJob) -> None:
         self._jobs[job.id] = job
         if self.jobs is not None:
             await _maybe_await(self.jobs.update(job))
         if self.session is not None:
             self.session.commit()
-        return job
+        inval = self._invalidation_targets.pop(job.id, None)
+        if inval is not None:
+            t_id, d_id, ver = inval
+            await self._safe_invalidate(t_id, d_id, ver)
 
     async def _parse(self, job: IngestionJob, payload: SourcePayload) -> IngestionJob:
         parsed = self.parser(payload.data, payload.mime_type)
@@ -237,6 +250,16 @@ class IngestionService:
                 await _maybe_await(self.embedding_provider.embed([chunk.text for chunk in chunks])),
             )
         return []
+
+    def _record_invalidation(
+        self,
+        job_id: str,
+        tenant_id: str,
+        doc_id: str,
+        version: int | None,
+    ) -> None:
+        if version is not None:
+            self._invalidation_targets[job_id] = (tenant_id, doc_id, version)
 
     async def _persist(
         self,
@@ -304,8 +327,12 @@ class IngestionService:
                         update={"metadata": {**document.metadata, "document_id": persisted.id}}
                     )
                     chunks = chunk_document(document, self.chunk_policy)
+                self._record_invalidation(
+                    job.id, job.tenant_id, document.metadata["document_id"], 1
+                )
             elif persisted.content_hash != document.content_hash:
                 version = document.metadata["version"]
+                replaced_version = persisted.version
                 if self.versions is None:
                     raise RuntimeError("version repository is required for replacement")  # noqa: TRY003
                 await _maybe_await(
@@ -321,12 +348,18 @@ class IngestionService:
                     )
                 )
                 await _maybe_await(self.documents.activate_version(persisted.id, version))
+                self._record_invalidation(job.id, job.tenant_id, persisted.id, replaced_version)
                 if self.chunks is not None:
                     await _maybe_await(
                         self.chunks.delete_by_document_version(
                             persisted.id, persisted.version, self._contexts[job.id]
                         )
                     )
+        else:
+            ver = replaced_version if replaced_version is not None else document.metadata["version"]
+            self._record_invalidation(
+                job.id, job.tenant_id, document.metadata["document_id"], ver
+            )
         if self.chunks is not None:
             await _maybe_await(self.chunks.bulk_create(chunks, embeddings=embeddings or None))
         if self.indexer is not None:
@@ -388,3 +421,28 @@ class IngestionService:
 
     def active_chunk_count(self, document_id: str) -> int:
         return len(self._memory_documents[document_id].chunks)
+
+    async def delete_document(self, document_id: str, context: RequestContext) -> None:
+        if self.documents is not None and hasattr(self.documents, "deactivate"):
+            await _maybe_await(self.documents.deactivate(document_id, context))
+        elif document_id in self._memory_documents:
+            doc = self._memory_documents[document_id]
+            if doc.tenant_id == context.tenant_id:
+                doc.status = "deleted"
+        if self.session is not None:
+            self.session.commit()
+        await self._safe_invalidate(context.tenant_id, document_id, None)
+
+    async def _safe_invalidate(
+        self, tenant_id: str, document_id: str, version: int | None = None
+    ) -> None:
+        if self.cache_service is None:
+            return
+        try:
+            res = self.cache_service.invalidate_document(tenant_id, document_id, version)
+            await _maybe_await(res)
+        except Exception as exc:
+            logger.warning(
+                "Cache invalidation failed after state transition: %s",
+                type(exc).__name__,
+            )

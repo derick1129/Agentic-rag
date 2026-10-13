@@ -7,6 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from adaptive.cache.postgres import PostgresCacheStore
+from adaptive.cache.references import PostgresReferenceChecker
 from adaptive.cache.service import CacheMetrics, SemanticCacheService
 from adaptive.db.models import Base, Document, DocumentVersion
 from adaptive.interfaces import (
@@ -374,3 +375,49 @@ async def test_service_rejects_entries_with_incomplete_citation_references() -> 
         )
     )
     assert await service.lookup(_lookup()) is None
+
+
+@pytest.mark.asyncio
+async def test_postgres_reference_checker_active_version_and_acl_semantics(
+    session: Session,
+) -> None:
+    _active_document(session, document_id="doc-1", version=1)
+    checker = PostgresReferenceChecker(
+        session_factory=lambda: Session(bind=session.connection())
+    )
+
+    # Active and ACL matches exactly
+    assert await checker.are_active("acme", frozenset({"support"}), {"doc-1": 1}) is True
+
+    # Active and ACL is a subset of request ACL
+    assert await checker.are_active("acme", frozenset({"support", "admin"}), {"doc-1": 1}) is True
+
+    # Empty references is always True
+    assert await checker.are_active("acme", frozenset({"support"}), {}) is True
+
+    # Empty tenant_id fails
+    assert await checker.are_active("", frozenset({"support"}), {"doc-1": 1}) is False
+
+    # Tenant mismatch fails
+    assert await checker.are_active("globex", frozenset({"support"}), {"doc-1": 1}) is False
+
+    # Request ACL missing required document ACL
+    assert await checker.are_active("acme", frozenset({"billing"}), {"doc-1": 1}) is False
+
+    # Non-existent document version
+    assert await checker.are_active("acme", frozenset({"support"}), {"doc-99": 1}) is False
+
+    # Deactivated / replaced status
+    session.query(DocumentVersion).filter_by(document_id="doc-1", version=1).update(
+        {"status": "replaced"}
+    )
+    session.flush()
+    assert await checker.are_active("acme", frozenset({"support"}), {"doc-1": 1}) is False
+
+    # Session / DB error fails closed
+    def _throwing_session() -> Session:
+        msg = "DB down"
+        raise RuntimeError(msg)
+
+    failing_checker = PostgresReferenceChecker(session_factory=_throwing_session)
+    assert await failing_checker.are_active("acme", frozenset({"support"}), {"doc-1": 1}) is False

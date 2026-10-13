@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+from sqlalchemy import select
+
+from adaptive.db.models import DocumentVersion
+
 if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
+
     from adaptive.interfaces import CacheEntry
 
 
@@ -61,3 +67,55 @@ def has_complete_references(entry: CacheEntry) -> bool:
     return bool(references) and all(
         _citation_matches_references(citation, references) for citation in citations
     )
+
+
+@runtime_checkable
+class PostgresReferenceChecker(ReferenceChecker, Protocol):
+    """PostgreSQL-backed reference checker validating active document versions and ACLs."""
+
+    def __init__(self, session_factory: Callable[[], Session]) -> None:
+        self.session_factory = session_factory
+
+    def _validate_references(
+        self,
+        session: Session,
+        tenant_id: str,
+        acl: frozenset[str],
+        references: Mapping[str, int],
+    ) -> bool:
+        for doc_id, ver in references.items():
+            if not _is_non_empty_str(doc_id) or not _is_valid_version(ver):
+                return False
+            stmt = select(DocumentVersion).where(
+                DocumentVersion.tenant_id == tenant_id,
+                DocumentVersion.document_id == doc_id,
+                DocumentVersion.version == int(ver),
+                DocumentVersion.status == "active",
+            )
+            row = session.scalar(stmt)
+            if row is None or row.status != "active":
+                return False
+            row_acl = frozenset(row.acl) if row.acl else frozenset()
+            if not row_acl.issubset(acl):
+                return False
+        return True
+
+    async def are_active(
+        self,
+        tenant_id: str,
+        acl: frozenset[str],
+        references: Mapping[str, int],
+    ) -> bool:
+        if not _is_non_empty_str(tenant_id):
+            return False
+        if not references:
+            return True
+
+        try:
+            session = self.session_factory()
+            try:
+                return self._validate_references(session, tenant_id, acl, references)
+            finally:
+                session.close()
+        except Exception:
+            return False
