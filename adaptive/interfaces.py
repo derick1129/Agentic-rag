@@ -582,6 +582,53 @@ class IngestionJobRepository(Protocol):
 
     async def update(self, job: IngestionJob) -> IngestionJob: ...
 
+    async def get_by_idempotency_key(
+        self, tenant_id: str, idempotency_key: str
+    ) -> IngestionJob | None: ...
+
+    async def claim_next(
+        self, worker_id: str, now: datetime, lease_seconds: int
+    ) -> ClaimedIngestionJob | None: ...
+
+    async def heartbeat(  # noqa: PLR0913
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        lease_token: str,
+        now: datetime,
+        lease_seconds: int,
+    ) -> ClaimedIngestionJob: ...
+
+    async def schedule_retry(  # noqa: PLR0913
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        lease_token: str,
+        available_at: datetime,
+        error_code: str,
+        error_message: str,
+    ) -> IngestionJob: ...
+
+    async def complete(
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        lease_token: str,
+        document_id: str,
+    ) -> IngestionJob: ...
+
+    async def dead_letter(  # noqa: PLR0913
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        lease_token: str,
+        error_code: str,
+        error_message: str,
+    ) -> IngestionJob: ...
 
 class Document(BaseModel):
     id: str

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.exc import IntegrityError
 
 if TYPE_CHECKING:
@@ -39,6 +39,7 @@ from adaptive.db.models import (
 )
 from adaptive.interfaces import (
     ChunkDraft,
+    ClaimedIngestionJob,
     Document,
     DocumentCreateParams,
     DocumentStatus,
@@ -46,6 +47,10 @@ from adaptive.interfaces import (
     IngestionStatus,
     RequestContext,
 )
+
+
+class LeaseLostError(LookupError):
+    """Raised when an ingestion job lease is no longer owned by the worker."""
 
 
 def _scope(
@@ -403,6 +408,178 @@ class IngestionJobRepository:
         model.lease_expires_at = _utc(job.lease_expires_at) if job.lease_expires_at else None
         self.session.flush()
         return self._contract(model)
+
+    def claim_next(
+        self, worker_id: str, now: datetime, lease_seconds: int
+    ) -> ClaimedIngestionJob | None:
+        now_utc = _utc(now)
+        lease_expires_at = now_utc + timedelta(seconds=lease_seconds)
+        query = (
+            select(JobModel)
+            .where(
+                or_(
+                    and_(
+                        JobModel.status.in_(
+                            [
+                                IngestionStatus.QUEUED.value,
+                                IngestionStatus.RETRY_WAIT.value,
+                                IngestionStatus.RECEIVED.value,
+                            ]
+                        ),
+                        JobModel.available_at <= now_utc,
+                    ),
+                    and_(
+                        JobModel.status == IngestionStatus.RUNNING.value,
+                        JobModel.lease_expires_at.is_not(None),
+                        JobModel.lease_expires_at <= now_utc,
+                    ),
+                )
+            )
+            .order_by(JobModel.available_at.asc(), JobModel.created_at.asc(), JobModel.id.asc())
+            .with_for_update(skip_locked=True)
+            .limit(1)
+        )
+        model = self.session.scalar(query)
+        if model is None:
+            return None
+        lease_token = new_id()
+        model.status = IngestionStatus.RUNNING.value
+        model.worker_id = worker_id
+        model.lease_token = lease_token
+        model.lease_expires_at = lease_expires_at
+        model.attempts = (model.attempts or 0) + 1
+        model.updated_at = now_utc
+        self.session.flush()
+        return ClaimedIngestionJob(
+            job=self._contract(model),
+            worker_id=worker_id,
+            lease_token=lease_token,
+            lease_expires_at=lease_expires_at,
+        )
+
+    def heartbeat(  # noqa: PLR0913
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        lease_token: str,
+        now: datetime,
+        lease_seconds: int,
+    ) -> ClaimedIngestionJob:
+        now_utc = _utc(now)
+        model = self._require_owned_running(
+            job_id, worker_id=worker_id, lease_token=lease_token
+        )
+        if model.lease_expires_at is not None and _utc(model.lease_expires_at) <= now_utc:
+            raise LeaseLostError("ingestion job lease lost")  # noqa: TRY003
+        lease_expires_at = now_utc + timedelta(seconds=lease_seconds)
+        model.lease_expires_at = lease_expires_at
+        model.updated_at = now_utc
+        self.session.flush()
+        return ClaimedIngestionJob(
+            job=self._contract(model),
+            worker_id=worker_id,
+            lease_token=lease_token,
+            lease_expires_at=lease_expires_at,
+        )
+
+    def update_stage(
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        lease_token: str,
+        stage: str,
+    ) -> IngestionJob:
+        model = self._require_owned_running(
+            job_id, worker_id=worker_id, lease_token=lease_token
+        )
+        model.current_stage = stage
+        model.updated_at = datetime.now(UTC)
+        self.session.flush()
+        return self._contract(model)
+
+    def schedule_retry(  # noqa: PLR0913
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        lease_token: str,
+        available_at: datetime,
+        error_code: str,
+        error_message: str,
+    ) -> IngestionJob:
+        model = self._require_owned_running(
+            job_id, worker_id=worker_id, lease_token=lease_token
+        )
+        model.status = IngestionStatus.RETRY_WAIT.value
+        model.available_at = _utc(available_at)
+        model.error_code = error_code
+        model.error_message = " ".join(error_message.split())[:500]
+        model.worker_id = None
+        model.lease_token = None
+        model.lease_expires_at = None
+        model.updated_at = datetime.now(UTC)
+        self.session.flush()
+        return self._contract(model)
+
+    def complete(
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        lease_token: str,
+        document_id: str,
+    ) -> IngestionJob:
+        model = self._require_owned_running(
+            job_id, worker_id=worker_id, lease_token=lease_token
+        )
+        model.status = IngestionStatus.ACTIVE.value
+        model.current_stage = IngestionStatus.ACTIVE.value
+        model.document_id = document_id
+        model.error_code = None
+        model.error_message = None
+        model.worker_id = None
+        model.lease_token = None
+        model.lease_expires_at = None
+        model.updated_at = datetime.now(UTC)
+        self.session.flush()
+        return self._contract(model)
+
+    def dead_letter(  # noqa: PLR0913
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        lease_token: str,
+        error_code: str,
+        error_message: str,
+    ) -> IngestionJob:
+        model = self._require_owned_running(
+            job_id, worker_id=worker_id, lease_token=lease_token
+        )
+        model.status = IngestionStatus.DEAD_LETTER.value
+        model.error_code = error_code
+        model.error_message = " ".join(error_message.split())[:500]
+        model.worker_id = None
+        model.lease_token = None
+        model.lease_expires_at = None
+        model.updated_at = datetime.now(UTC)
+        self.session.flush()
+        return self._contract(model)
+
+    def _require_owned_running(
+        self, job_id: str, *, worker_id: str, lease_token: str
+    ) -> JobModel:
+        model = self.session.get(JobModel, job_id)
+        if (
+            model is None
+            or model.status != IngestionStatus.RUNNING.value
+            or model.worker_id != worker_id
+            or model.lease_token != lease_token
+        ):
+            raise LeaseLostError("ingestion job lease lost")  # noqa: TRY003
+        return model
 
     @staticmethod
     def _contract(model: JobModel) -> IngestionJob:
