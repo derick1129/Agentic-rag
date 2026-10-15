@@ -49,7 +49,6 @@ async def test_full_retrieval_guardrail_auth_smoke_path():
     # 1. Authenticate with dev JWT
     settings = Settings(
         DATABASE_URL="sqlite:///:memory:",
-        OPENSEARCH_URL="http://localhost:9200",
         AUTH_MODE="development",
         AUTH_DEV_TENANT_ID="acme",
         AUTH_DEV_SUBJECT_ID="user-smoke",

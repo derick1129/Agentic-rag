@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 
 os.environ.setdefault("DATABASE_URL", "postgresql+psycopg://user:pass@localhost:5432/testdb")
-os.environ.setdefault("OPENSEARCH_URL", "http://localhost:9200")
 
 from collections.abc import Callable, Coroutine
 from contextlib import asynccontextmanager

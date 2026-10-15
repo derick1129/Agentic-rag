@@ -22,15 +22,15 @@ The Adaptive Agentic RAG V1 is a self-improving Retrieval-Augmented Generation s
   3. **Chunking**: Split documents into overlapping chunks
   4. **Versioning**: Manage document versions with deduplication
   5. **Persistence**: Store chunks and metadata in PostgreSQL
-  6. **Indexing**: Add chunks to OpenSearch for search capabilities
+  6. **Indexing**: Prepare chunks for BM25 and vector search
 
 ### 3. Retrieval System (`adaptive.retrieval`)
 - **Hybrid Retriever**: Combines BM25 (keyword) and dense (vector) search
 - **Fusion**: Uses Reciprocal Rank Fusion (RRF) to combine results
 - **Reranking**: Optional cross-encoder reranking for improved relevance
 - **Backends**:
-  - BM25: OpenSearch-based text search
-  - Dense: Vector embeddings stored in OpenSearch with k-NN search
+  - BM25: In-memory Rank-BM25 on chunk corpus
+  - Dense: Vector embeddings stored in PostgreSQL with pgvector
   - Reranker: Cross-encoder models for relevance scoring
 
 ### 4. Adaptive Routing (`adaptive.routers`)
@@ -75,7 +75,7 @@ The Adaptive Agentic RAG V1 is a self-improving Retrieval-Augmented Generation s
 2. API validates request and creates ingestion job
 3. IngestionService processes document through parsing, normalization, chunking
 4. Chunks are embedded and stored in PostgreSQL
-5. Chunks are indexed in OpenSearch for retrieval
+5. Chunks are indexed for hybrid retrieval
 6. Job status updated to completed/failed
 
 ### Query Flow:
@@ -114,15 +114,15 @@ The Adaptive Agentic RAG V1 is a self-improving Retrieval-Augmented Generation s
 
 ### Local Development
 - Docker Compose orchestrates all services
-- Individual containers for API, PostgreSQL, OpenSearch, Phoenix
+- Individual containers for API, PostgreSQL, Redis, Phoenix
 - Shared network for inter-service communication
 - Volume mounts for persistent storage
 
 ### Production Considerations
 - Horizontal scaling of API replicas behind load balancer
 - Database read replicas for query-heavy workloads
-- OpenSearch cluster with multiple nodes for high availability
-- Redis or dedicated cache layer for semantic cache (optional)
+- Redis cluster or managed cache for semantic caching
+- Dedicated worker instances for asynchronous ingestion jobs
 - Separate observability stack for metrics and logging
 
 ## Extensibility Points
@@ -157,7 +157,7 @@ The Adaptive Agentic RAG V1 is a self-improving Retrieval-Augmented Generation s
 ## Security Considerations
 
 ### Data Protection
-- Encryption at rest for PostgreSQL and OpenSearch volumes
+- Encryption at rest for PostgreSQL and Redis volumes
 - TLS encryption for service-to-service communication (production)
 - Secret management through environment variables or secret stores
 

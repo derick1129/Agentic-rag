@@ -7,7 +7,7 @@ This guide provides procedures for responding to common incidents with the Adapt
 The Adaptive Agentic RAG service consists of multiple components:
 - API service (FastAPI/Uvicorn)
 - PostgreSQL database with pgvector
-- OpenSearch search engine
+- Redis cache
 - Phoenix observability platform
 
 ## Common Issues and Resolutions
@@ -30,7 +30,7 @@ The Adaptive Agentic RAG service consists of multiple components:
    ```
 3. Verify dependencies are healthy:
    ```bash
-   docker compose ps postgres opensearch
+   docker compose ps postgres redis phoenix
    ```
 
 **Resolution:**
@@ -40,7 +40,7 @@ The Adaptive Agentic RAG service consists of multiple components:
    ```
 2. If the issue persists, check for dependency failures and restart them:
    ```bash
-   docker compose restart postgres opensearch
+   docker compose restart postgres redis phoenix
    docker compose up -d api
    ```
 
@@ -75,35 +75,30 @@ The Adaptive Agentic RAG service consists of multiple components:
    docker compose run --rm api alembic upgrade head
    ```
 
-### 3. Search Engine Issues
+### 3. Redis Cache Issues
 
 **Symptoms:**
-- Degraded search performance
-- Failed to index documents
-- Query timeout errors
+- Cache write/read errors or timeouts
+- Redis connection errors in API or worker logs
 
 **Diagnosis:**
-1. Check OpenSearch container status:
+1. Check Redis container status:
    ```bash
-   docker compose ps opensearch
+   docker compose ps redis
    ```
-2. Check OpenSearch logs:
+2. Check Redis logs:
    ```bash
-   docker compose logs opensearch
+   docker compose logs redis
    ```
-3. Verify cluster health:
+3. Verify Redis is accepting commands:
    ```bash
-   curl -s http://localhost:9200/_cluster/health?pretty
+   docker compose exec redis redis-cli ping
    ```
 
 **Resolution:**
-1. Restart OpenSearch:
+1. Restart Redis:
    ```bash
-   docker compose restart opensearch
-   ```
-2. Check indices and reindex if necessary:
-   ```bash
-   curl -s http://localhost:9200/_cat/indices?v
+   docker compose restart redis
    ```
 
 ### 4. Observability Issues

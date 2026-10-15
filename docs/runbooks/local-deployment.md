@@ -36,7 +36,7 @@ The local deployment includes:
 
 - **API** (port 8000): The main Adaptive Agentic RAG service
 - **PostgreSQL** (port 5432): Database with pgvector extension for vector storage
-- **OpenSearch** (port 9200): Search and analytics engine for hybrid retrieval
+- **Redis** (port 6379): In-memory cache for semantic query caching
 - **Phoenix** (port 6006): Observability and trace visualization
 
 ## Health Check

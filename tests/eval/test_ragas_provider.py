@@ -106,7 +106,6 @@ class FakeEmbeddingProvider:
 def _settings(*, api_key: str = "judge-secret") -> Settings:
     return Settings(
         DATABASE_URL="postgresql://db",
-        OPENSEARCH_URL="http://search",
         RAGAS_JUDGE_API_KEY=api_key,
         RAGAS_JUDGE_API_BASE="https://judge.example/v1",
         RAGAS_JUDGE_MODEL="judge-model",

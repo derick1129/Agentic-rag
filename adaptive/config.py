@@ -44,13 +44,6 @@ class Settings(BaseSettings):
         new_query = "&".join(f"{k}={val}" for k, vals in query.items() for val in vals)
         return urlunparse(parsed._replace(query=new_query))
 
-    # OpenSearch
-    opensearch_url: str = Field(alias="OPENSEARCH_URL")
-    opensearch_username: str = Field(default="", alias="OPENSEARCH_USERNAME")
-    opensearch_password: str = Field(default="", alias="OPENSEARCH_PASSWORD")
-    opensearch_verify_certs: bool = Field(default=False, alias="OPENSEARCH_VERIFY_CERTS")
-    opensearch_index_prefix: str = Field(default="adaptive_rag", alias="OPENSEARCH_INDEX_PREFIX")
-
     # Embedding Provider
     embedding_provider: Literal["openai", "azure", "local", "fake"] = Field(
         default="openai", alias="EMBEDDING_PROVIDER"

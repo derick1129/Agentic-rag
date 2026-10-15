@@ -7,7 +7,6 @@ import os
 from typing import Any
 
 os.environ.setdefault("DATABASE_URL", "postgresql+psycopg://user:pass@localhost:5432/testdb")
-os.environ.setdefault("OPENSEARCH_URL", "http://localhost:9200")
 
 from contextlib import asynccontextmanager
 
