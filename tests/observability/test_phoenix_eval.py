@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING
 
 import pytest
 
+from adaptive.observability import phoenix_eval
 from adaptive.observability.phoenix_eval import (
     PhoenixEvalRuntime,
     PhoenixEvalSettings,
@@ -13,7 +13,9 @@ from adaptive.observability.phoenix_eval import (
     TraceSelection,
     evaluate_selected_traces,
 )
-from adaptive.observability import phoenix_eval
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
 
 
 class FakeSpans:
@@ -92,7 +94,7 @@ def _runtime(
             client=client,
             faithfulness_evaluator=faithfulness,
             document_relevance_evaluator=relevance,
-            annotation_frame_factory=lambda rows: list(rows),
+            annotation_frame_factory=list,
         ),
         client,
         faithfulness,
@@ -136,7 +138,7 @@ def test_evaluation_is_project_scoped_and_filters_trace_ids_locally() -> None:
     ]
     assert summary.selected_spans == 1
     assert summary.metrics["faithfulness"].scored == 1
-    assert summary.metrics["document_relevance"].scored == 2
+    assert summary.metrics["document_relevance"].scored == 2  # noqa: PLR2004
     assert {call[1]["annotation_name"] for call in client.spans.annotations} == {
         "faithfulness",
         "document_relevance",

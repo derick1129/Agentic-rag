@@ -5,9 +5,12 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
-from typing import TextIO
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+    from typing import TextIO
 
 from adaptive.observability.phoenix_eval import (
     MAX_SPANS_PER_RUN,

@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import io
 
-from adaptive.observability.phoenix_eval import PhoenixEvalSettings, PhoenixEvaluationSummary
+import pytest
+
 from adaptive.observability import phoenix_eval_cli
+from adaptive.observability.phoenix_eval import PhoenixEvalSettings, PhoenixEvaluationSummary
+
+EXIT_CODE_SUCCESS = 0
+EXIT_CODE_ERROR = 2
 
 
 def _settings() -> PhoenixEvalSettings:
@@ -12,18 +17,15 @@ def _settings() -> PhoenixEvalSettings:
         capture_content=True,
         groq_api_base="https://groq.example/openai/v1",
         groq_model="judge-model",
-        groq_api_key="groq-secret",
+        groq_api_key="groq-test-key",
     )
 
 
 def test_cli_requires_a_project_and_an_explicit_selection() -> None:
     parser = phoenix_eval_cli.build_parser()
-    try:
+    with pytest.raises(SystemExit) as exc_info:
         parser.parse_args([])
-    except SystemExit as exc:
-        assert exc.code == 2
-    else:
-        raise AssertionError("selection should be required")
+    assert exc_info.value.code == EXIT_CODE_ERROR
 
 
 def test_cli_rejects_unbounded_time_selection_without_calling_evaluator() -> None:
@@ -35,11 +37,11 @@ def test_cli_rejects_unbounded_time_selection_without_calling_evaluator() -> Non
         output=output,
     )
 
-    assert code == 2
+    assert code == EXIT_CODE_ERROR
     assert output.getvalue() == '{"category": "bounded_time_range_required", "status": "error"}\n'
 
 
-def test_cli_prints_only_sanitized_summary(monkeypatch) -> None:
+def test_cli_prints_only_sanitized_summary(monkeypatch: pytest.MonkeyPatch) -> None:
     unsafe = "source and provider text must not be printed"
     output = io.StringIO()
 
@@ -60,14 +62,14 @@ def test_cli_prints_only_sanitized_summary(monkeypatch) -> None:
     )
 
     rendered = output.getvalue()
-    assert code == 0
+    assert code == EXIT_CODE_SUCCESS
     assert '"status": "ok"' in rendered
     assert '"run_id": "run-safe"' in rendered
     assert unsafe not in rendered
 
 
-def test_cli_never_prints_secret_or_provider_exception(monkeypatch) -> None:
-    secret = "groq-secret"
+def test_cli_never_prints_secret_or_provider_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    sentinel = "groq-key-marker"
     provider_error = "provider response text"
     output = io.StringIO()
 
@@ -82,7 +84,7 @@ def test_cli_never_prints_secret_or_provider_exception(monkeypatch) -> None:
     )
 
     rendered = output.getvalue()
-    assert code == 2
-    assert secret not in rendered
+    assert code == EXIT_CODE_ERROR
+    assert sentinel not in rendered
     assert provider_error not in rendered
     assert rendered == '{"category": "evaluation_failed", "status": "error"}\n'

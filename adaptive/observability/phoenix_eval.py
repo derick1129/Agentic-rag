@@ -12,10 +12,9 @@ import os
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
-from typing import Any, Protocol
+from datetime import datetime, timedelta
+from typing import Protocol
 from uuid import uuid4
-
 
 MAX_SPANS_PER_RUN = 500
 MAX_TIME_RANGE = timedelta(days=7)
@@ -62,16 +61,19 @@ class PhoenixEvalSettings:
         )
 
     @classmethod
-    def from_settings(cls, settings: Any) -> PhoenixEvalSettings:
+    def from_settings(cls, settings: object) -> PhoenixEvalSettings:
         """Adapt the application settings object for callers that already have it."""
 
-        secret = settings.phoenix_eval_groq_api_key
-        key = secret.get_secret_value() if hasattr(secret, "get_secret_value") else str(secret)
+        secret = getattr(settings, "phoenix_eval_groq_api_key", None)
+        if secret is not None and hasattr(secret, "get_secret_value"):
+            key = secret.get_secret_value()
+        else:
+            key = str(secret or "")
         return cls(
-            api_base_url=settings.phoenix_api_base_url,
-            capture_content=settings.phoenix_capture_content,
-            groq_api_base=settings.phoenix_eval_groq_api_base,
-            groq_model=settings.phoenix_eval_groq_model,
+            api_base_url=str(getattr(settings, "phoenix_api_base_url", "")),
+            capture_content=bool(getattr(settings, "phoenix_capture_content", False)),
+            groq_api_base=str(getattr(settings, "phoenix_eval_groq_api_base", "")),
+            groq_model=str(getattr(settings, "phoenix_eval_groq_model", "")),
             groq_api_key=key,
         )
 
@@ -119,9 +121,9 @@ class TraceSelection:
 
 
 class SpanService(Protocol):
-    def get_spans_dataframe(self, **kwargs: Any) -> Any: ...
+    def get_spans_dataframe(self, **kwargs: object) -> object: ...
 
-    def log_span_annotations_dataframe(self, dataframe: Any, **kwargs: Any) -> Any: ...
+    def log_span_annotations_dataframe(self, dataframe: object, **kwargs: object) -> object: ...
 
 
 class PhoenixClient(Protocol):
@@ -129,10 +131,10 @@ class PhoenixClient(Protocol):
 
 
 class Evaluator(Protocol):
-    def evaluate(self, **kwargs: str) -> Any: ...
+    def evaluate(self, **kwargs: str) -> object: ...
 
 
-AnnotationFrameFactory = Callable[[Sequence[Mapping[str, object]]], Any]
+AnnotationFrameFactory = Callable[[Sequence[Mapping[str, object]]], object]
 
 
 @dataclass(frozen=True)
@@ -199,10 +201,13 @@ def build_phoenix_runtime(settings: PhoenixEvalSettings) -> PhoenixEvalRuntime:
 
     settings.validate_for_run()
     try:
-        from phoenix.client import Client
-        from phoenix.evals import DocumentRelevanceEvaluator, FaithfulnessEvaluator
-        from phoenix.evals.llm import LLM
-        import pandas as pd
+        import pandas as pd  # type: ignore[import-not-found,import-untyped] # noqa: PLC0415
+        from phoenix.client import Client  # type: ignore[import-not-found] # noqa: PLC0415
+        from phoenix.evals import (  # type: ignore[import-not-found] # noqa: PLC0415
+            DocumentRelevanceEvaluator,
+            FaithfulnessEvaluator,
+        )
+        from phoenix.evals.llm import LLM  # type: ignore[import-not-found] # noqa: PLC0415
     except ImportError as exc:
         raise PhoenixEvaluationError("phoenix_eval_dependencies_unavailable") from exc
 
@@ -275,7 +280,7 @@ def evaluate_selected_traces(
     return summary
 
 
-def _query_spans(client: PhoenixClient, selection: TraceSelection) -> Any:
+def _query_spans(client: PhoenixClient, selection: TraceSelection) -> object:
     kwargs: dict[str, object] = {
         "project_identifier": selection.project,
         "limit": selection.limit,
@@ -286,11 +291,8 @@ def _query_spans(client: PhoenixClient, selection: TraceSelection) -> Any:
     return client.spans.get_spans_dataframe(**kwargs)
 
 
-def _dataframe_records(frame: Any) -> list[Mapping[str, object]]:
-    if hasattr(frame, "to_dict"):
-        records = frame.to_dict(orient="records")
-    else:
-        records = frame
+def _dataframe_records(frame: object) -> list[Mapping[str, object]]:
+    records = frame.to_dict(orient="records") if hasattr(frame, "to_dict") else frame
     if not isinstance(records, Iterable):
         raise PhoenixEvaluationError("invalid_phoenix_span_response")
     index_name, index_values = _named_index_values(frame)
@@ -310,10 +312,12 @@ def _dataframe_records(frame: Any) -> list[Mapping[str, object]]:
     return mapped
 
 
-def _named_index_values(frame: Any) -> tuple[str | None, list[object] | None]:
+def _named_index_values(frame: object) -> tuple[str | None, list[object] | None]:
     """Keep Phoenix's named span-id index when records omit it as a column."""
 
     index = getattr(frame, "index", None)
+    if index is None:
+        return None, None
     index_name = getattr(index, "name", None)
     if index_name not in _FIELD_CANDIDATES["span_id"]:
         return None, None
@@ -438,7 +442,7 @@ def _evaluate_document_relevance(
         metric.scored += 1
 
 
-def _annotation_row(span_id: str, result: Any) -> dict[str, object] | None:
+def _annotation_row(span_id: str, result: object) -> dict[str, object] | None:
     score = _score(result)
     if score is None:
         return None
@@ -449,7 +453,7 @@ def _annotation_row(span_id: str, result: Any) -> dict[str, object] | None:
     }
 
 
-def _score(result: Any) -> float | None:
+def _score(result: object) -> float | None:
     value = result.get("score") if isinstance(result, Mapping) else getattr(result, "score", None)
     if isinstance(value, bool):
         return float(value)
@@ -459,7 +463,7 @@ def _score(result: Any) -> float | None:
     return score if 0.0 <= score <= 1.0 else None
 
 
-def _safe_label(result: Any) -> str:
+def _safe_label(result: object) -> str:
     value = result.get("label") if isinstance(result, Mapping) else getattr(result, "label", None)
     if not isinstance(value, str):
         return "unknown"
