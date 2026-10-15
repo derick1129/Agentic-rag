@@ -109,23 +109,75 @@ class QueryTrace:
             "tenant.scope_id": scope_id(self.context.tenant_id, self.context.acl),
             "query.hash": query_hash(self.query),
             "model.profile": self.model_profile,
+            "query": self.query,
         }
-        self._root = self.manager.tracer.start_span(
-            "rag.request", attributes=normalize_attributes(attributes, self.manager.config)
-        )
-        self._root_context = trace.use_span(self._root, end_on_exit=False)
-        self._root_context.__enter__()
-        self.manager.metrics.request()
+        attributes = {key: value for key, value in attributes.items() if value is not None}
+        try:
+            self._root = self.manager.tracer.start_span(
+                "rag.request", attributes=normalize_attributes(attributes, self.manager.config)
+            )
+            self._root_context = trace.use_span(self._root, end_on_exit=False)
+            self._root_context.__enter__()
+            self.manager.metrics.request()
+        except Exception:
+            if self._root is not None:
+                try:
+                    self._root.end()
+                except Exception:
+                    logger.warning("Unable to close query trace after startup error")
+            if self._root_context is not None:
+                try:
+                    self._root_context.__exit__(None, None, None)
+                except Exception:
+                    logger.warning("Unable to close query trace context after startup error")
+            self._root = None
+            self._root_context = None
+            logger.warning("Unable to start query trace")
         return self
 
     def __exit__(self, exc_type: object, exc: BaseException | None, tb: object) -> None:
         if self._root is not None:
             if exc is not None:
-                self._root.record_exception(exc)
-                self._root.set_status(trace.Status(trace.StatusCode.ERROR, str(exc)))
-            self._root.end()
+                try:
+                    self._root.set_attribute("error.category", "request_failed")
+                    self._root.set_status(trace.Status(trace.StatusCode.ERROR, "request_failed"))
+                    self.manager.metrics.failure({"error.category": "request_failed"})
+                except Exception:
+                    logger.warning("Unable to record query trace status")
+            try:
+                self._root.end()
+            except Exception:
+                logger.warning("Unable to close query trace")
         if self._root_context is not None:
-            self._root_context.__exit__(exc_type, exc, tb)
+            try:
+                self._root_context.__exit__(exc_type, exc, tb)
+            except Exception:
+                logger.warning("Unable to close query trace context")
+
+    def set_attributes(self, attributes: dict[str, Any]) -> None:
+        """Add normalized request attributes when the root span is available."""
+
+        if self._root is None:
+            return
+        try:
+            selected = {key: value for key, value in attributes.items() if value is not None}
+            normalized = normalize_attributes(selected, self.manager.config)
+            for key, value in normalized.items():
+                self._root.set_attribute(key, value)
+        except Exception:
+            logger.warning("Unable to update query trace attributes")
+
+    def set_span_attribute(self, span: Span | None, key: str, value: object) -> None:
+        """Set a safe scalar span attribute without affecting application work."""
+
+        if span is None or value is None:
+            return
+        try:
+            normalized = normalize_attributes({key: value}, self.manager.config)
+            if key in normalized:
+                span.set_attribute(key, normalized[key])
+        except Exception:
+            logger.warning("Unable to update query trace span attribute")
 
     @contextmanager
     def span(self, name: str, attributes: dict[str, Any] | None = None) -> Iterator[Span]:
@@ -136,19 +188,31 @@ class QueryTrace:
             "model.profile": self.model_profile,
         }
         common.update(attributes or {})
-        span = self.manager.tracer.start_span(
-            name,
-            attributes=normalize_attributes(common, self.manager.config),
-        )
+        common = {key: value for key, value in common.items() if value is not None}
+        try:
+            span = self.manager.tracer.start_span(
+                name,
+                attributes=normalize_attributes(common, self.manager.config),
+            )
+        except Exception:
+            logger.warning("Unable to start query trace span")
+            yield trace.get_current_span()
+            return
         with trace.use_span(span, end_on_exit=False):
             try:
                 yield span
-            except Exception as exc:
-                span.record_exception(exc)
-                span.set_status(trace.Status(trace.StatusCode.ERROR, str(exc)))
+            except Exception:
+                try:
+                    span.set_attribute("error.category", "operation_failed")
+                    span.set_status(trace.Status(trace.StatusCode.ERROR, "operation_failed"))
+                except Exception:
+                    logger.warning("Unable to record query trace span status")
                 raise
             finally:
-                span.end()
+                try:
+                    span.end()
+                except Exception:
+                    logger.warning("Unable to close query trace span")
 
 
 class TraceManager:
