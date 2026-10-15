@@ -11,6 +11,11 @@ RUN uv sync --frozen --no-install-project
 COPY . .
 RUN uv sync --frozen --no-dev
 
+FROM builder AS test
+ENV UV_NO_DEV=0
+RUN uv sync --frozen --group dev
+ENTRYPOINT ["uv", "run", "--frozen", "--group", "dev", "pytest"]
+
 FROM python:3.11-slim-bookworm AS runtime
 
 ENV PATH="/app/.venv/bin:$PATH" \

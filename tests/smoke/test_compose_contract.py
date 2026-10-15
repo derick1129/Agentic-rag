@@ -41,23 +41,17 @@ def test_api_depends_on_healthy_infrastructure_and_has_required_environment() ->
         "redis": {"condition": "service_healthy"},
         "phoenix": {"condition": "service_healthy"},
     }
-    assert {
-        "DATABASE_URL",
-        "REDIS_HOST",
-        "PHOENIX_ENDPOINT",
-        "APP_HOST",
-        "APP_PORT",
-    } <= api["environment"].keys()
+    assert {"DATABASE_URL", "REDIS_HOST", "PHOENIX_ENDPOINT", "APP_HOST", "APP_PORT"} <= api["environment"].keys()
+    assert api["environment"]["PHOENIX_API_BASE_URL"] == "${PHOENIX_API_BASE_URL:-http://phoenix:6006}"
+    assert api["environment"]["PHOENIX_ENDPOINT"] == "${PHOENIX_ENDPOINT:-http://phoenix:6006/v1/traces}"
+    assert api["environment"]["PHOENIX_CAPTURE_CONTENT"] == "${PHOENIX_CAPTURE_CONTENT:-false}"
 
     assert worker["depends_on"] == {
         "postgres": {"condition": "service_healthy"},
         "redis": {"condition": "service_healthy"},
         "phoenix": {"condition": "service_healthy"},
     }
-    assert {
-        "DATABASE_URL",
-        "INGESTION_TEMP_DIR",
-    } <= worker["environment"].keys()
+    assert {"DATABASE_URL", "INGESTION_TEMP_DIR"} <= worker["environment"].keys()
     assert worker["build"] == api["build"]
 
 
@@ -72,3 +66,11 @@ def test_dockerfile_and_entrypoint_define_locked_non_root_startup() -> None:
     assert "alembic upgrade head" in entrypoint
     assert "exec uvicorn" in entrypoint
     assert 'exec "$@"' in entrypoint
+
+
+def test_test_service_is_opt_in_and_uses_dev_dependencies() -> None:
+    compose = load_compose()
+    service = compose["services"]["test"]
+    assert service["profiles"] == ["test"]
+    assert service["build"]["target"] == "test"
+    assert service["entrypoint"] == ["uv", "run", "--frozen", "--group", "dev", "pytest"]

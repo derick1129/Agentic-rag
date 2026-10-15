@@ -1,4 +1,11 @@
 services:
+  test:
+    profiles: ["test"]
+    build:
+      context: .
+      target: test
+    entrypoint: ["uv", "run", "--frozen", "--group", "dev", "pytest"]
+
   api:
     build:
       context: .
@@ -66,6 +73,8 @@ services:
       # Phoenix Observability
       PHOENIX_ENABLED: ${PHOENIX_ENABLED:-true}
       PHOENIX_ENDPOINT: ${PHOENIX_ENDPOINT:-http://phoenix:6006/v1/traces}
+      PHOENIX_API_BASE_URL: ${PHOENIX_API_BASE_URL:-http://phoenix:6006}
+      PHOENIX_CAPTURE_CONTENT: ${PHOENIX_CAPTURE_CONTENT:-false}
       PHOENIX_PROJECT_NAME: ${PHOENIX_PROJECT_NAME:-adaptive-rag}
       PHOENIX_REDACT_PROMPTS: ${PHOENIX_REDACT_PROMPTS:-true}
       PHOENIX_REDACT_DOCUMENTS: ${PHOENIX_REDACT_DOCUMENTS:-true}
