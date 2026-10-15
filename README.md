@@ -285,6 +285,68 @@ Access the built-in control dashboard at **`http://localhost:8000/dashboard`**:
 
 ---
 
+## 📊 Offline RAG Evaluation with Ragas
+
+Ragas evaluation is an explicit, offline workflow for scoring observations that you provide. It does not run the application's query pipeline, collect traces, or publish results to Phoenix. Install the optional evaluator dependencies when needed:
+
+```bash
+uv sync --extra eval
+```
+
+The judge uses Groq's OpenAI-compatible API. Set the key only in your local environment (never commit it); the endpoint and model can be overridden:
+
+```dotenv
+RAGAS_JUDGE_API_KEY=your-groq-api-key
+# Optional overrides:
+RAGAS_JUDGE_API_BASE=https://api.groq.com/openai/v1
+RAGAS_JUDGE_MODEL=openai/gpt-oss-20b
+```
+
+For each labeled evaluation item, provide its generated response and the contexts actually returned by retrieval. `EvalItem.context` is not used by Ragas: `retrieved_contexts` comes only from the supplied observation and must contain the actual retrieved text. `EvalItem.gold_answer` is passed as the reference for context precision and context recall when present; it is not treated as a retrieved context. Empty or missing inputs make only the affected metrics not applicable.
+
+```python
+import asyncio
+import json
+
+from adaptive.config import get_settings
+from adaptive.eval.datasets import load_dataset
+from adaptive.eval.ragas_models import RagasObservation
+from adaptive.eval.ragas_provider import build_ragas_metrics
+from adaptive.eval.ragas_evaluator import evaluate_ragas
+
+
+async def main():
+    items = load_dataset("data/eval")
+    observations = [
+        RagasObservation(
+            dataset_item_id=items[0].id,
+            response="The answer produced for this evaluation item.",
+            retrieved_contexts=["The text of the chunk actually retrieved."],
+        ),
+    ]
+
+    # Pass the embedding provider already configured for this application.
+    metric_set = build_ragas_metrics(get_settings(), configured_embedding_provider)
+    report = await evaluate_ragas(
+        items,
+        observations,
+        metric_set,
+        evaluator_metadata={"model": "openai/gpt-oss-20b"},
+    )
+    print(json.dumps(report.model_dump(mode="json"), indent=2))
+
+
+asyncio.run(main())
+```
+
+Replace `configured_embedding_provider` with the application's configured embedding provider. The evaluator uses that provider and its configured embedding model for response relevancy; Groq supplies the LLM judge for the other Ragas metrics. Keep observation text and credentials in the local evaluation environment and share only appropriately reviewed results.
+
+### Establish a baseline first
+
+Capture the first baseline only after collecting real responses and their actual retrieved contexts, and after configuring your Groq key. Review the resulting per-metric and aggregate scores before choosing any target. Do not create a baseline from the deterministic fake provider, reference contexts, or synthetic retrieval text. Ragas score thresholds are not part of CI; first establish and review a representative baseline, then decide whether a separate threshold proposal is appropriate.
+
+---
+
 ## 🧪 Development & Quality Assurance
 
 Run the test suite and static analysis in the Docker development image:
