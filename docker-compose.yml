@@ -15,7 +15,7 @@ services:
       target: runtime-eval
     entrypoint: ["python", "-m", "adaptive.observability.phoenix_eval_cli"]
     environment:
-      PHOENIX_API_BASE_URL: ${PHOENIX_API_BASE_URL:-http://phoenix:6006}
+      PHOENIX_API_BASE_URL: ${PHOENIX_EVAL_API_BASE_URL:-http://phoenix:6006}
       PHOENIX_PROJECT_NAME: ${PHOENIX_PROJECT_NAME:-adaptive-rag}
       PHOENIX_EVAL_GROQ_API_BASE: ${PHOENIX_EVAL_GROQ_API_BASE:-https://api.groq.com/openai/v1}
       PHOENIX_EVAL_GROQ_MODEL: ${PHOENIX_EVAL_GROQ_MODEL:-llama-3.3-70b-versatile}
