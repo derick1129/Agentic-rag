@@ -10,14 +10,19 @@ from adaptive.eval.metrics import (
     sql_result_set_accuracy,
 )
 
+EXPECTED_HALF_SCORE = 0.5
+EXPECTED_NDCG_SCORE = 0.6934264036172708
+BOOTSTRAP_SAMPLES = 200
+BOOTSTRAP_SEED = 7
+
 
 def test_retrieval_metrics_use_ranked_ids_and_relevance() -> None:
     ranked = ["c3", "c1", "c2"]
     relevant = {"c1", "c2"}
 
-    assert recall_at_k(ranked, relevant, 2) == 0.5
-    assert mrr(ranked, relevant) == 0.5
-    assert ndcg(ranked, relevant, 3) == 0.6934264036172708
+    assert recall_at_k(ranked, relevant, 2) == EXPECTED_HALF_SCORE
+    assert mrr(ranked, relevant) == EXPECTED_HALF_SCORE
+    assert ndcg(ranked, relevant, 3) == EXPECTED_NDCG_SCORE
 
 
 def test_answer_and_citation_metrics_are_normalized_and_grounded() -> None:
@@ -40,9 +45,11 @@ def test_sql_accuracy_and_route_confusion_are_exact() -> None:
 
 
 def test_paired_bootstrap_is_deterministic_and_reports_delta_interval() -> None:
-    result = paired_bootstrap_delta([1.0, 0.0, 1.0], [0.0, 0.0, 1.0], samples=200, seed=7)
+    result = paired_bootstrap_delta(
+        [1.0, 0.0, 1.0], [0.0, 0.0, 1.0], samples=BOOTSTRAP_SAMPLES, seed=BOOTSTRAP_SEED
+    )
 
     assert result.delta == 1 / 3
     assert result.lower <= result.delta <= result.upper
-    assert result.samples == 200
-    assert result.seed == 7
+    assert result.samples == BOOTSTRAP_SAMPLES
+    assert result.seed == BOOTSTRAP_SEED

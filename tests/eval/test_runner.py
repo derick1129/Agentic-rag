@@ -1,4 +1,6 @@
+import builtins
 import json
+import sys
 
 import pytest
 
@@ -24,12 +26,37 @@ async def test_offline_evaluation_emits_comparison_metrics_traces_and_annotation
     report = await evaluate_run(items, DeterministicFakeProvider(), mode="routed")
 
     assert report.mode == "routed"
-    assert report.count == 3
+    assert report.count == len(items)
     assert report.metrics["answer_correctness"] == 1.0
     assert report.metrics["route_accuracy"] == 1.0
-    assert len(report.traces) == 3
+    assert len(report.traces) == len(items)
     assert all(trace["name"] == "evaluation.record" for trace in report.traces)
     assert all(annotation["evaluator_version"] for annotation in report.annotations)
+
+
+@pytest.mark.asyncio
+async def test_deterministic_evaluation_does_not_import_ragas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for mod in list(sys.modules):
+        if mod == "ragas" or mod.startswith("ragas."):
+            monkeypatch.delitem(sys.modules, mod, raising=False)
+
+    original_import = builtins.__import__
+
+    def reject_ragas_import(name: str, *args: object, **kwargs: object) -> object:
+        if name == "ragas" or name.startswith("ragas."):
+            raise AssertionError from None
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", reject_ragas_import)
+    items = load_dataset("data/eval")[:2]
+    report = await evaluate_run(items, DeterministicFakeProvider(), mode="routed")
+
+    assert report.count == len(items)
+    assert report.metrics["answer_correctness"] == 1.0
+    assert report.metrics["route_accuracy"] == 1.0
+    assert not any(name == "ragas" or name.startswith("ragas.") for name in sys.modules)
 
 
 @pytest.mark.asyncio
@@ -60,7 +87,7 @@ def test_confidence_sweep_reports_bootstrapped_compatible_operating_points() -> 
 async def test_annotation_sink_failure_does_not_fail_evaluation() -> None:
     class BrokenSink:
         def record(self, annotation: dict) -> None:
-            raise RuntimeError("storage unavailable")
+            raise RuntimeError
 
     report = await evaluate_run(
         load_dataset("data/eval")[:1], DeterministicFakeProvider(), annotation_sink=BrokenSink()
