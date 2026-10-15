@@ -173,7 +173,7 @@ def authenticate_request(
     In production mode:
         Validates JWT claims (iss, aud, exp, nbf, sub, tenant_id) using PyJWT.
     """
-    if settings is None:
+    if not isinstance(settings, Settings):
         settings = get_settings()
 
     token = _extract_bearer_token(request, settings.auth_mode)
