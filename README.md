@@ -26,34 +26,32 @@ The **Adaptive Agentic RAG** engine combines dynamic query routing, multi-method
 
 ### Architectural Breakdown
 
-```
-[ Client Query / Ingestion ]
-           │
-           ▼
-[ Adaptive Query Router ] ──── {intent, depth, tool_choice}
-     │           │             │            │
-cache_probe  bm25_search  vector_ann  tool_dispatch
-     │           │             │            │
-     ▼           ▼             ▼            ▼
-┌────────────────────────────────────────────────────────┐
-│          Hybrid Retrieval & Search Methods             │
-│  1. Semantic Cache Probe (RediSearch Vector <50ms)     │
-│  2. BM25 Lexical Keyword Search (Rank-BM25 Sparse)     │
-│  3. Dense Vector ANN Search (pgvector HNSW Cosine)     │
-│  4. Specialized Tool Retrieval (Text-to-SQL & Web)     │
-└────────────────────────────────────────────────────────┘
-     │           │             │            │
-     └───────────┼─────────────┴────────────┘
-                 ▼
-┌────────────────────────────────────────────────────────┐
-│     Reciprocal Rank Fusion (RRF) & Neural Reranker     │
-│   • RRF Candidate Merging (k=60)                       │
-│   • NVIDIA NIM Cross-Encoder (Nemotron-Rerank-VL-1B)   │
-│   • Evidence Validation & Token Budget Guardrails      │
-└────────────────────────────────────────────────────────┘
-                 │
-                 ▼
-[ Grounded Answer Synthesis & Citations [1][2] ] ──► (cache_put)
+```mermaid
+flowchart TD
+    client["Client Query / Ingestion"] --> router["Adaptive Query Router ──── {intent, depth, tool_choice}"]
+
+    router -->|cache_probe| m1
+    router -->|bm25_search| m2
+    router -->|vector_ann| m3
+    router -->|tool_dispatch| m4
+
+    subgraph hybrid["Hybrid Retrieval & Search Methods"]
+        direction TB
+        m1["1. Semantic Cache Probe (RediSearch Vector &lt;50ms)"]
+        m2["2. BM25 Lexical Keyword Search (Rank-BM25 Sparse)"]
+        m3["3. Dense Vector ANN Search (pgvector HNSW Cosine)"]
+        m4["4. Specialized Tool Retrieval (Text-to-SQL &amp; Web)"]
+    end
+
+    m1 --> rerank
+    m2 --> rerank
+    m3 --> rerank
+    m4 --> rerank
+
+    rerank["Reciprocal Rank Fusion (RRF) &amp; Neural Reranker<br/>• RRF Candidate Merging (k=60)<br/>• NVIDIA NIM Cross-Encoder (Nemotron-Rerank-VL-1B)<br/>• Evidence Validation &amp; Token Budget Guardrails"]
+
+    rerank --> synthesis["Grounded Answer Synthesis &amp; Citations [1][2]"]
+    synthesis --> cache_put(["(cache_put)"])
 ```
 
 1. **Client Action / Query**: Tenant-scoped payloads arrive via REST API, file upload, or CLI with authenticated access control lists (`ACL`), request context timestamps, and token budgets.
