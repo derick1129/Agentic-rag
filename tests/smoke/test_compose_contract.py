@@ -93,6 +93,9 @@ def test_phoenix_evaluator_is_optional_container_only_and_waits_for_phoenix() ->
     assert service["environment"]["PHOENIX_API_BASE_URL"] == (
         "${PHOENIX_EVAL_API_BASE_URL:-http://phoenix:6006}"
     )
+    assert service["environment"]["PHOENIX_CAPTURE_CONTENT"] == (
+        "${PHOENIX_CAPTURE_CONTENT:-false}"
+    )
     assert service["environment"]["PHOENIX_EVAL_GROQ_API_KEY"] == (
         "${PHOENIX_EVAL_GROQ_API_KEY:-}"
     )
