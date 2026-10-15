@@ -79,6 +79,15 @@ class Settings(BaseSettings):
     )
     generation_max_retries: int = Field(default=3, alias="GENERATION_MAX_RETRIES", ge=0, le=10)
 
+    # Optional offline Ragas evaluation judge (credentials are required only when invoked).
+    ragas_judge_api_key: str = Field(default="", alias="RAGAS_JUDGE_API_KEY")
+    ragas_judge_api_base: str = Field(
+        default="https://api.groq.com/openai/v1", alias="RAGAS_JUDGE_API_BASE"
+    )
+    ragas_judge_model: str = Field(
+        default="openai/gpt-oss-20b", alias="RAGAS_JUDGE_MODEL"
+    )
+
     # NVIDIA NIMS Fallback
     nims_base_url: str = Field(default="https://integrate.api.nvidia.com/v1", alias="NIMS_BASE_URL")
     nims_api_key: str = Field(default="", alias="NIMS_API_KEY")
