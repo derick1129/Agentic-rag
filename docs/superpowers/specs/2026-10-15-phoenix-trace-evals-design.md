@@ -56,8 +56,11 @@ Make the existing Phoenix/OTLP setup useful for inspecting Adaptive RAG request 
 ## Compatibility and Operational Constraints
 
 - The current Compose Phoenix server is pinned to 12.25.1. Before choosing Python client/evaluation package constraints, verify the client trace-query and annotation APIs against this server version. Update the server image only if the supported client workflow requires it, and cover the version relationship in the Compose contract/smoke checks.
+- Keep the entire Phoenix runtime and evaluation workflow Dockerized. Phoenix server, API/worker tracing, dependency installation, and the explicit trace-evaluation command run through Docker Compose. Do not require operators to install Phoenix SDK packages or run the evaluator on the host.
+- Run evaluations as an explicit one-shot Compose service using the application image and optional Phoenix evaluation dependencies baked into that image. The one-shot service waits for Phoenix health and exits after logging annotations and a sanitized summary. It is excluded from normal `docker compose up` startup unless explicitly invoked.
+- Pass the Groq credential to the one-shot container through the operator's environment or an ignored local `.env` file; never bake it into an image, commit it, or print it.
 - Phoenix evaluation SDK behavior may record evaluator inputs, outputs, prompts, and explanations as traces. Keep such execution behind the explicit command and content opt-in, and document the configured Phoenix project as the destination for those evaluator traces.
-- Do not start an external Phoenix or Groq service automatically from tests. Unit tests should use injected fake clients/evaluators; any local service smoke test must be explicitly opt-in.
+- Do not start external Groq evaluation automatically from tests. Unit tests should use injected fake clients/evaluators in the Docker development/test environment; any Phoenix service smoke test must be explicitly opt-in through Compose.
 
 ## Acceptance Criteria
 

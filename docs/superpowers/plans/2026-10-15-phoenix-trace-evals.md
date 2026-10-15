@@ -4,7 +4,7 @@
 
 **Goal:** Instrument Adaptive RAG requests in Phoenix and add an explicit offline command that evaluates selected Phoenix traces with Phoenix evaluators and Groq.
 
-**Architecture:** Reuse the existing OpenTelemetry `TraceManager` and OTLP exporter for application traces, wiring spans into the FastAPI query flow. Add a default-off, narrow content-capture policy. Put Phoenix client/evaluation dependencies and trace querying/annotation logic behind an optional extra and an explicit CLI boundary. Evaluation results attach to their Phoenix source spans; Ragas remains disconnected.
+**Architecture:** Reuse the existing OpenTelemetry `TraceManager` and OTLP exporter for application traces, wiring spans into the FastAPI query flow. Add a default-off, narrow content-capture policy. Keep the Phoenix server, app/worker, SDK dependencies, and offline trace-evaluation command in Docker Compose. Bake the optional evaluation extra into the app image and run evaluations through an explicit one-shot Compose service that attaches results to Phoenix source spans; Ragas remains disconnected.
 
 **Tech Stack:** Python 3.11, FastAPI, Pydantic Settings, OpenTelemetry OTLP, Phoenix server/client/evaluation SDK, Groq OpenAI-compatible endpoint, `uv`, pytest, Ruff.
 
@@ -21,6 +21,7 @@
 - Do not log source text, API keys, raw model outputs, or raw provider exception messages.
 - Preserve tenant/ACL filtering and hashed scope identifiers; tracing must not influence retrieval scope or response behavior.
 - Keep existing deterministic metrics unchanged. Do not add score-based CI gates or automatic evaluation.
+- Operators must not need host-installed Phoenix SDK packages or a host-run evaluator. Use Docker Compose for Phoenix service startup, trace evaluation, and integration smoke checks; pass Groq credentials only as runtime container environment.
 
 ## Review Focus
 
@@ -40,6 +41,7 @@
 - Modify: `adaptive/observability/attributes.py`
 - Modify: `adaptive/api/main.py`
 - Modify: `docker-compose.yml`
+- Modify: `Dockerfile`
 - Test: `tests/config/test_phoenix_settings.py`
 - Test: `tests/observability/test_attributes.py`
 - Test: `tests/smoke/test_compose_contract.py`
@@ -55,7 +57,7 @@ Expected: new configuration/policy assertions fail because the opt-in and API ba
 
 - [ ] **Step 3: Implement settings and a narrow content policy**
 
-Add `PHOENIX_CAPTURE_CONTENT=false`, `PHOENIX_API_BASE_URL`, and Phoenix evaluation settings `PHOENIX_EVAL_GROQ_API_BASE`, `PHOENIX_EVAL_GROQ_MODEL`, and `PHOENIX_EVAL_GROQ_API_KEY`. Keep secret fields secret in settings representations. Extend telemetry configuration so the application can attach only approved content keys when explicitly enabled while preserving credential redaction. Configure the in-container Phoenix API base URL in Compose as `http://phoenix:6006`; preserve the separate OTLP endpoint. Host-run CLI usage defaults to `http://localhost:6006`.
+Add `PHOENIX_CAPTURE_CONTENT=false`, `PHOENIX_API_BASE_URL`, and Phoenix evaluation settings `PHOENIX_EVAL_GROQ_API_BASE`, `PHOENIX_EVAL_GROQ_MODEL`, and `PHOENIX_EVAL_GROQ_API_KEY`. Keep secret fields secret in settings representations. Extend telemetry configuration so the application can attach only approved content keys when explicitly enabled while preserving credential redaction. Configure the in-container Phoenix API base URL in Compose as `http://phoenix:6006`; preserve the separate OTLP endpoint. Keep the evaluator container-only; no host-run evaluator default is provided.
 
 - [ ] **Step 4: Verify configuration tests**
 
@@ -110,7 +112,8 @@ git commit -m "feat(observability): trace Adaptive RAG requests"
 **Files:**
 - Modify: `pyproject.toml`
 - Modify: `uv.lock`
-- Possibly modify: `docker-compose.yml`
+- Modify: `Dockerfile`
+- Modify: `docker-compose.yml`
 - Test: `tests/smoke/test_compose_contract.py`
 
 - [ ] **Step 1: Confirm supported package/server API pairing**
@@ -119,15 +122,15 @@ Inspect the official Phoenix client and evaluation API for trace querying and sp
 
 - [ ] **Step 2: Add optional dependencies**
 
-Add a `phoenix-eval` optional dependency group containing only the Phoenix client/evaluation packages needed by the chosen API. Keep serving dependencies free of those packages and update `uv.lock`.
+Add a `phoenix-eval` optional dependency group containing only the Phoenix client/evaluation packages needed by the chosen API. Keep base serving dependencies free of those packages and update `uv.lock`. Install the optional group in the app Docker image used by the one-shot evaluator; do not instruct operators to install it on their host.
 
 - [ ] **Step 3: Add dependency and compose contract tests**
 
-Assert the compose image is explicitly version-pinned and the configured API base URL is distinct from its OTLP `/v1/traces` endpoint. Add a lock/dependency contract test only if consistent with existing project conventions.
+Assert the Phoenix server image is explicitly version-pinned and the configured API base URL is distinct from its OTLP `/v1/traces` endpoint. Assert the one-shot `phoenix-eval` service uses the app image, waits for Phoenix health, receives the evaluator configuration from environment, and is gated behind an explicit Compose profile/invocation. Add a lock/dependency contract test only if consistent with existing project conventions.
 
 - [ ] **Step 4: Resolve and verify dependencies**
 
-Run: `uv lock`, `uv sync --dev --extra phoenix-eval`, and `uv lock --check`.
+Run dependency resolution in the project Docker build with the `phoenix-eval` optional group and run `uv lock --check` in the Docker development/test image.
 Expected: compatible optional dependencies resolve and the lockfile is current. Do not call Phoenix or Groq from this step.
 
 - [ ] **Step 5: Commit optional SDK dependencies**
@@ -173,11 +176,11 @@ Use the supported Phoenix span-evaluation logging API to attach each metric resu
 
 - [ ] **Step 7: Add the explicit CLI entry point**
 
-Add an `adaptive-phoenix-eval` command that requires a Phoenix project and an explicit trace/time selection. Evaluate only traces that actually contain the required captured fields; skip or reject traces with missing inputs and provide a sanitized message that points to the opt-in configuration. The command must not be invoked automatically during app startup or query handling.
+Add an `adaptive-phoenix-eval` command that requires a Phoenix project and an explicit trace/time selection. Expose it only through the one-shot `phoenix-eval` Compose service (for example, `docker compose --profile eval run --rm phoenix-eval ...`). Evaluate only traces that actually contain the required captured fields; skip or reject traces with missing inputs and provide a sanitized message that points to the opt-in configuration. The command must not be invoked automatically during app startup or query handling.
 
 - [ ] **Step 8: Verify evaluation tests without network access**
 
-Run: `uv run pytest tests/observability/test_phoenix_eval.py tests/observability/test_phoenix_eval_cli.py -q`
+Run focused evaluation tests in the Docker development/test image (using injected fakes).
 Expected: PASS using fakes only; no Phoenix or Groq service is contacted.
 
 - [ ] **Step 9: Commit trace evaluation**
@@ -196,7 +199,7 @@ git commit -m "feat(observability): evaluate selected Phoenix traces"
 
 - [ ] **Step 1: Document Phoenix setup and privacy controls**
 
-Explain the local Compose Phoenix endpoint, optional installation (`uv sync --extra phoenix-eval`), `PHOENIX_CAPTURE_CONTENT=false` default, the exact selected content captured when opted in, Groq settings/key setup, and the explicit trace evaluation command. Explain that Phoenix stores opted-in trace content and evaluator traces/results, while Groq receives selected content only during explicit evaluation.
+Explain the local Compose Phoenix endpoint, the Docker image's optional evaluation dependencies, `PHOENIX_CAPTURE_CONTENT=false` default, the exact selected content captured when opted in, Groq runtime key setup, and the explicit one-shot Compose evaluation command. Explain that Phoenix stores opted-in trace content and evaluator traces/results, while Groq receives selected content only during explicit evaluation. Do not document host installation or host execution for the evaluator.
 
 - [ ] **Step 2: Document metrics and separation from deterministic/Ragas metrics**
 
@@ -204,13 +207,12 @@ Explain Phoenix faithfulness and document relevance; state that MRR, recall@k, a
 
 - [ ] **Step 3: Run focused validation**
 
-Run: `uv run pytest tests/observability tests/config tests/smoke/test_compose_contract.py tests/api -q`.
-Run: `uv run ruff check adaptive/observability adaptive/api/main.py adaptive/config.py tests/observability tests/config`.
+Run focused pytest and Ruff checks in the Docker development/test image. Run an explicitly opt-in Phoenix Compose smoke test only when the local Docker environment is available.
 Expected: all focused checks pass; any unavailable local Phoenix integration smoke is documented and not silently treated as passed.
 
 - [ ] **Step 4: Run required project checks**
 
-Run: `uv run pytest`, `uv run ruff check .`, `uv run mypy adaptive`, and `uv lock --check`.
+Run the full pytest, Ruff, mypy, and lock checks in the Docker development/test image.
 Expected: checks pass without live Groq/Phoenix access. Do not add a CI metric threshold or run network LLM evaluations as part of ordinary CI.
 
 - [ ] **Step 5: Commit documentation and final contract adjustments**
