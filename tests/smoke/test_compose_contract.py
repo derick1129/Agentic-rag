@@ -93,9 +93,22 @@ def test_phoenix_evaluator_is_optional_container_only_and_waits_for_phoenix() ->
     assert service["environment"]["PHOENIX_API_BASE_URL"] == (
         "${PHOENIX_API_BASE_URL:-http://phoenix:6006}"
     )
-    assert service["environment"]["PHOENIX_EVAL_GROQ_API_KEY"] == "${PHOENIX_EVAL_GROQ_API_KEY:-}"
+    assert service["environment"]["PHOENIX_EVAL_GROQ_API_KEY"] == (
+        "${PHOENIX_EVAL_GROQ_API_KEY:-}"
+    )
+    assert service["environment"]["PHOENIX_EVAL_GROQ_API_BASE"] == (
+        "${PHOENIX_EVAL_GROQ_API_BASE:-https://api.groq.com/openai/v1}"
+    )
+    assert service["environment"]["PHOENIX_EVAL_GROQ_MODEL"] == (
+        "${PHOENIX_EVAL_GROQ_MODEL:-llama-3.3-70b-versatile}"
+    )
     assert api_environment["PHOENIX_API_BASE_URL"] != api_environment["PHOENIX_ENDPOINT"]
     assert compose["services"]["phoenix"]["image"] == "arizephoenix/phoenix:12.25.1"
+
+    phoenix_healthcheck = compose["services"]["phoenix"]["healthcheck"]
+    assert phoenix_healthcheck["test"][0:2] == ["CMD", "python"]
+    assert "/healthz" in phoenix_healthcheck["test"][3]
+    assert phoenix_healthcheck["retries"] > 0
 
     dockerfile = (ROOT / "Dockerfile").read_text()
     assert "AS evaluator-builder" in dockerfile
