@@ -40,6 +40,8 @@ from adaptive.interfaces import (
     SourceStorage,
 )
 
+logger = logging.getLogger("adaptive.ingestion")
+
 PERMANENT_ERROR_CODES: frozenset[str] = frozenset(
     {
         "parse_error",
@@ -355,6 +357,7 @@ class IngestionService:
         chunk_policy: ChunkPolicy | None = None,
         embedding_provider: Any = None,
         indexer: Any = None,
+        cache_service: Any = None,
         max_attempts: int = 5,
     ) -> None:
         if session is not None:
@@ -391,6 +394,7 @@ class IngestionService:
         self.chunk_policy = chunk_policy or ChunkPolicy()
         self.embedding_provider = embedding_provider
         self.indexer = indexer
+        self.cache_service = cache_service
         self.max_attempts = max_attempts
         self._memory_documents: dict[str, _MemoryDocument] = {}
         self._invalidation_targets: dict[str, tuple[str, str, int]] = {}
@@ -580,6 +584,11 @@ class IngestionService:
             if self.session is not None and hasattr(self.session, "commit"):
                 self.session.commit()
 
+            inval = self._invalidation_targets.pop(job.id, None)
+            if inval is not None:
+                t_id, d_id, ver = inval
+                await self._safe_invalidate(t_id, d_id, ver)
+
             if job.source_key:
                 self.storage.delete(job.source_key)
         except Exception as exc:
@@ -637,6 +646,7 @@ class IngestionService:
         if inval is not None:
             t_id, d_id, ver = inval
             await self._safe_invalidate(t_id, d_id, ver)
+        return job
 
     async def _transition_stage(
         self,
@@ -947,10 +957,13 @@ class IngestionService:
                 )
             if getattr(persisted, "version", None) != version:
                 await _maybe_await(self.documents.activate_version(persisted.id, version))
+            rep_ver = replaced_version or getattr(persisted, "version", None)
+            if rep_ver is not None:
+                self._record_invalidation(job.id, job.tenant_id, persisted.id, rep_ver)
             if self.chunks is not None and hasattr(self.chunks, "delete_by_document_version"):
                 await _maybe_await(
                     self.chunks.delete_by_document_version(
-                        persisted.id, replaced_version or persisted.version, context
+                        persisted.id, rep_ver or persisted.version, context
                     )
                 )
         return document, rechunked
@@ -987,6 +1000,8 @@ class IngestionService:
             )
             if existing.content_hash != document.content_hash:
                 existing.status = "replaced"
+                if self.documents is None:
+                    self._record_invalidation(job.id, job.tenant_id, existing.id, existing.version)
             record = _MemoryDocument(
                 existing.id,
                 job.tenant_id,
@@ -1086,6 +1101,16 @@ class IngestionService:
         if self.session is not None:
             self.session.commit()
         await self._safe_invalidate(context.tenant_id, document_id, None)
+
+    def _record_invalidation(
+        self,
+        job_id: str,
+        tenant_id: str,
+        doc_id: str,
+        version: int | None,
+    ) -> None:
+        if version is not None:
+            self._invalidation_targets[job_id] = (tenant_id, doc_id, version)
 
     async def _safe_invalidate(
         self, tenant_id: str, document_id: str, version: int | None = None
