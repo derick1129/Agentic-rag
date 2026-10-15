@@ -111,9 +111,7 @@ def upgrade() -> None:
             )
         elif status == "received":
             if source_key is not None:
-                bind.execute(
-                    sa.update(jobs).where(jobs.c.id == row["id"]).values(status="queued")
-                )
+                bind.execute(sa.update(jobs).where(jobs.c.id == row["id"]).values(status="queued"))
             else:
                 bind.execute(
                     sa.update(jobs)
@@ -133,12 +131,8 @@ def downgrade() -> None:
         sa.column("id", sa.String),
         sa.column("status", sa.String),
     )
-    bind.execute(
-        sa.update(jobs).where(jobs.c.status == "dead_letter").values(status="failed")
-    )
-    bind.execute(
-        sa.update(jobs).where(jobs.c.status == "queued").values(status="received")
-    )
+    bind.execute(sa.update(jobs).where(jobs.c.status == "dead_letter").values(status="failed"))
+    bind.execute(sa.update(jobs).where(jobs.c.status == "queued").values(status="received"))
 
     with op.batch_alter_table("ingestion_jobs") as batch_op:
         batch_op.drop_index("ix_ingestion_jobs_queue_claim")

@@ -3,15 +3,27 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
+import json
 import logging
 from contextlib import asynccontextmanager, contextmanager, nullcontext
 from datetime import UTC, datetime, timedelta
 from time import perf_counter
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, cast
 
 import redis
 import uvicorn
-from fastapi import FastAPI, HTTPException, Depends, Request, status, UploadFile, File, Form, Header
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -25,19 +37,10 @@ from adaptive.api.schemas import (
     QueryResponse,
 )
 from adaptive.cache.redis import RedisCacheStore
+from adaptive.cache.references import PostgresReferenceChecker
 from adaptive.cache.service import SemanticCacheService
 from adaptive.config import Settings, get_settings
 from adaptive.db.session import SessionLocal
-from adaptive.interfaces import (
-    CacheEntry,
-    CacheLookup,
-    GuardrailAction,
-    IdempotencyConflictError,
-    IngestionJob,
-    RequestContext,
-    RouteDepth,
-    RouteTool,
-)
 from adaptive.guardrails.runner import GuardrailRunner
 from adaptive.ingestion.models import SourcePayload
 from adaptive.ingestion.service import IngestionService
@@ -45,6 +48,7 @@ from adaptive.interfaces import (
     CacheEntry,
     CacheLookup,
     GuardrailAction,
+    IdempotencyConflictError,
     IngestionJob,
     RequestContext,
     RetrievalQuery,
@@ -53,20 +57,18 @@ from adaptive.interfaces import (
     RouteTool,
 )
 from adaptive.observability.attributes import TelemetryConfig
-from adaptive.observability.tracing import QueryTrace, configure_telemetry
-from adaptive.retrieval.hybrid import HybridRetrieverService
-from adaptive.retrieval.retrieval_grader import RetrievalGrader, RetrievalGraderBridge
-from adaptive.retrieval.contracts import HashEmbeddingProvider
-from adaptive.cache.redis import RedisCacheStore
-from adaptive.cache.references import PostgresReferenceChecker
-from adaptive.cache.service import SemanticCacheService
-from adaptive.retrieval.bm25_stage import BM25Stage
-from adaptive.retrieval.neondb_dense import NeonDBDenseStage
-from adaptive.providers.openai import OpenAIEmbeddingProvider, OpenAIGenerationProvider
+from adaptive.observability.tracing import (
+    QueryTrace,
+    TraceManager,
+    configure_telemetry,
+)
 from adaptive.providers.fallback_embedding import FallbackEmbeddingProvider
 from adaptive.providers.fallback_generation import FallbackGenerationProvider
 from adaptive.providers.nim_s_reranker import NIMSReranker
-from adaptive.providers.openai import OpenAIEmbeddingProvider, OpenAIGenerationProvider
+from adaptive.providers.openai import (
+    OpenAIEmbeddingProvider,
+    OpenAIGenerationProvider,
+)
 from adaptive.retrieval.bm25_stage import BM25Stage
 from adaptive.retrieval.contracts import EmbeddingProvider, HashEmbeddingProvider
 from adaptive.retrieval.hybrid import HybridRetrieverService
@@ -74,7 +76,7 @@ from adaptive.retrieval.neondb_dense import NeonDBDenseStage
 from adaptive.retrieval.retrieval_grader import RetrievalGrader, RetrievalGraderBridge
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Iterator
 
     from sqlalchemy.orm import Session
 
@@ -98,43 +100,15 @@ _trace_manager: TraceManager | None = None
 
 AuthContextDep = Annotated[RequestContext, Depends(authenticate_request)]
 UploadFileDep = Annotated[UploadFile, File(...)]
-MetadataFormDep = Annotated[str, Form("{}")]
-
-def get_ingestion_service() -> IngestionService:
-    """Return the active IngestionService or raise 503 if not initialized."""
-    if _ingestion_service is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Ingestion service not initialized",
-        )
-    return _ingestion_service
+MetadataFormDep = Annotated[str, Form()]
 
 
-def get_current_context(
-    request: Request,
-    context: RequestContext = Depends(authenticate_request),
-) -> RequestContext:
-    """FastAPI dependency to authenticate the request and return RequestContext."""
-    return context
+def _azure_embedding_not_implemented_error() -> NotImplementedError:
+    return NotImplementedError("Azure OpenAI embedding provider not implemented")
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Application lifespan manager."""
-    # Startup
-    global _ingestion_service, _retrieval_service, _bm25_stage, _redis_client, _cache_store, _cache_service, _embedding_provider, _generation_provider, _trace_manager
-    
-    # Initialize tracing
-    settings = get_settings()
-    telemetry_config = TelemetryConfig(
-        enabled=settings.phoenix_enabled,
-        phoenix_endpoint=settings.phoenix_endpoint,
-        phoenix_project_name=settings.phoenix_project_name,
-        capture_content=settings.phoenix_capture_content,
-        redact_prompts=settings.phoenix_redact_prompts,
-        redact_documents=settings.phoenix_redact_documents,
-        redact_credentials=settings.phoenix_redact_credentials,
-    )
+def _missing_embedding_provider_error() -> ValueError:
+    return ValueError("No embedding provider configured. Set EMBEDDING_API_KEY or NIMS_API_KEY.")
 
 
 def _azure_generation_not_implemented_error() -> NotImplementedError:
@@ -236,6 +210,8 @@ async def _init_redis_and_cache(
     settings: Settings,
 ) -> tuple[redis.Redis | None, RedisCacheStore | None, SemanticCacheService | None]:
     redis_client: redis.Redis | None = None
+    cache_store: RedisCacheStore | None = None
+    cache_service: SemanticCacheService | None = None
     try:
         redis_client = redis.Redis(
             host=settings.redis_host,
@@ -258,11 +234,16 @@ async def _init_redis_and_cache(
             similarity_threshold=settings.cache_similarity_threshold,
         )
         checker = PostgresReferenceChecker(session_factory=SessionLocal)
-        _cache_service = SemanticCacheService(
-            store=_cache_store,
+        cache_service = SemanticCacheService(
+            store=cache_store,
             enabled=True,
             reference_checker=checker,
         )
+    return redis_client, cache_store, cache_service
+
+
+def _build_reranker(settings: Settings) -> NIMSReranker | None:
+    if not settings.nims_api_key:
         return None
     nims_rerank_model = settings.nims_rerank_model or "nvidia/llama-nemotron-rerank-vl-1b-v2"
     try:
@@ -279,14 +260,15 @@ async def _init_redis_and_cache(
 def _init_ingestion_and_retrieval(
     settings: Settings,
     embedding_provider: EmbeddingProvider,
+    cache_service: SemanticCacheService | None = None,
 ) -> tuple[IngestionService, BM25Stage, RetrievalGraderBridge]:
     session = SessionLocal()
     try:
         ingestion_service = IngestionService(
             session=session,
-            embedding_provider=_embedding_provider,
-            indexer=None,  # We are not using an indexer; chunks are stored via the chunk repository
-            cache_service=_cache_service,
+            embedding_provider=embedding_provider,
+            indexer=None,
+            cache_service=cache_service,
         )
 
         def session_factory() -> Session:
@@ -327,6 +309,50 @@ async def _shutdown_services() -> None:
             logger.debug("Error stopping trace manager during shutdown", exc_info=True)
 
 
+def _set_state(  # noqa: PLR0913
+    *,
+    trace_manager: TraceManager | None = None,
+    embedding_provider: EmbeddingProviderInstance | None = None,
+    generation_provider: GenerationProviderInstance | None = None,
+    redis_client: redis.Redis | None = None,
+    cache_store: RedisCacheStore | None = None,
+    cache_service: SemanticCacheService | None = None,
+    ingestion_service: IngestionService | None = None,
+    bm25_stage: BM25Stage | None = None,
+    retrieval_service: HybridRetrieverService | RetrievalGraderBridge | None = None,
+    **kwargs: object,
+) -> None:
+    global _trace_manager, _embedding_provider, _generation_provider  # noqa: PLW0603
+    global _redis_client, _cache_store, _cache_service  # noqa: PLW0603
+    global _ingestion_service, _bm25_stage, _retrieval_service  # noqa: PLW0603
+    if trace_manager is not None or "_trace_manager" in kwargs:
+        _trace_manager = trace_manager or cast("TraceManager", kwargs.get("_trace_manager"))
+    if embedding_provider is not None or "_embedding_provider" in kwargs:
+        _embedding_provider = embedding_provider or cast(
+            "EmbeddingProviderInstance", kwargs.get("_embedding_provider")
+        )
+    if generation_provider is not None or "_generation_provider" in kwargs:
+        _generation_provider = generation_provider or cast(
+            "GenerationProviderInstance", kwargs.get("_generation_provider")
+        )
+    if redis_client is not None or "_redis_client" in kwargs:
+        _redis_client = redis_client or cast("redis.Redis", kwargs.get("_redis_client"))
+    if cache_store is not None or "_cache_store" in kwargs:
+        _cache_store = cache_store or cast("RedisCacheStore", kwargs.get("_cache_store"))
+    if cache_service is not None or "_cache_service" in kwargs:
+        _cache_service = cache_service or cast("SemanticCacheService", kwargs.get("_cache_service"))
+    if ingestion_service is not None or "_ingestion_service" in kwargs:
+        _ingestion_service = ingestion_service or cast(
+            "IngestionService", kwargs.get("_ingestion_service")
+        )
+    if bm25_stage is not None or "_bm25_stage" in kwargs:
+        _bm25_stage = bm25_stage or cast("BM25Stage", kwargs.get("_bm25_stage"))
+    if retrieval_service is not None or "_retrieval_service" in kwargs:
+        _retrieval_service = retrieval_service or cast(
+            "HybridRetrieverService | RetrievalGraderBridge", kwargs.get("_retrieval_service")
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application lifespan manager."""
@@ -347,24 +373,46 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     generation_provider = _build_generation_provider(settings, nims_generation_provider)
     redis_client, cache_store, cache_service = await _init_redis_and_cache(settings)
     ingestion_service, bm25_stage, retrieval_service = _init_ingestion_and_retrieval(
-        settings, embedding_provider
+        settings, embedding_provider, cache_service
     )
 
     _set_state(
-        _trace_manager=trace_manager,
-        _embedding_provider=embedding_provider,
-        _generation_provider=generation_provider,
-        _redis_client=redis_client,
-        _cache_store=cache_store,
-        _cache_service=cache_service,
-        _ingestion_service=ingestion_service,
-        _bm25_stage=bm25_stage,
-        _retrieval_service=retrieval_service,
+        trace_manager=trace_manager,
+        embedding_provider=embedding_provider,
+        generation_provider=generation_provider,
+        redis_client=redis_client,
+        cache_store=cache_store,
+        cache_service=cache_service,
+        ingestion_service=ingestion_service,
+        bm25_stage=bm25_stage,
+        retrieval_service=retrieval_service,
     )
 
     yield
 
     await _shutdown_services()
+
+
+def get_ingestion_service() -> IngestionService:
+    """Return the active IngestionService or raise 503 if not initialized."""
+    if _ingestion_service is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Ingestion service not initialized",
+        )
+    return _ingestion_service
+
+
+_auth_context_dep = Depends(authenticate_request)
+_empty_form_dep = Form()
+
+
+def get_current_context(
+    request: Request,
+    context: RequestContext = _auth_context_dep,
+) -> RequestContext:
+    """FastAPI dependency to authenticate the request and return RequestContext."""
+    return context
 
 
 def _ingestion_response(job: IngestionJob) -> IngestionResponse:
@@ -427,59 +475,14 @@ def _parse_upload_metadata(metadata: str) -> dict[str, Any]:
     return parsed
 
 
-async def _lookup_semantic_cache(
-    request: QueryRequest,
-    context: RequestContext,
-) -> tuple[list[float] | None, QueryResponse | None]:
-    if _cache_service is None or _embedding_provider is None:
-        return None, None
-    try:
-        embed_result = _embedding_provider.embed([request.query], input_type="query")
-        embeddings = await embed_result if inspect.isawaitable(embed_result) else embed_result
-        if not embeddings:
-            return None, None
-        query_embedding = embeddings[0]
-        lookup = CacheLookup(
-            query_text=request.query,
-            query_embedding=query_embedding,
-            context=context,
-            route_depth=RouteDepth.SINGLE_HOP,
-            route_tool=RouteTool.VECTOR,
-            model_profile="default",
-            response_mode="direct",
-        )
-        hit = await _cache_service.lookup(lookup)
-        if hit is not None:
-            return query_embedding, QueryResponse(
-                results=[],
-                trace_id=context.trace_id,
-                query=request.query,
-                answer=hit.entry.answer_text,
-                citations=list(hit.entry.citations) if hit.entry.citations else [],
-                cache_status="hit",
-            )
-    except Exception as e:
-        logger.warning("Semantic cache lookup failed: %s; proceeding to retrieval", e)
-        return None, None
-    return query_embedding, None
-
-
-def _ingestion_response(job: IngestionJob) -> IngestionResponse:
-    return IngestionResponse(
-        job_id=job.id,
-        status=job.status.value if hasattr(job.status, "value") else str(job.status),
-        message=f"Ingestion job {job.id} submitted successfully",
-    )
-
-
 def _register_ingestion_routes(app: FastAPI) -> None:
     # Ingestion endpoint (text paste)
     @app.post("/v1/ingestion", response_model=IngestionResponse)
     async def ingest_document(
         request: IngestionRequest,
-        context: RequestContext = Depends(get_current_context),
-        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-        ingestion_service: IngestionService = Depends(get_ingestion_service),
+        context: Annotated[RequestContext, Depends(get_current_context)],
+        ingestion_service: Annotated[IngestionService, Depends(get_ingestion_service)],
+        idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
     ) -> IngestionResponse:
         payload = SourcePayload(
             data=request.content.encode("utf-8"),
@@ -504,11 +507,11 @@ def _register_ingestion_routes(app: FastAPI) -> None:
     # Ingestion endpoint (file upload / multipart)
     @app.post("/v1/ingestion/upload", response_model=IngestionResponse)
     async def ingest_upload(
-        file: UploadFile = File(...),
-        metadata: str = Form("{}"),
-        context: RequestContext = Depends(get_current_context),
-        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-        ingestion_service: IngestionService = Depends(get_ingestion_service),
+        file: Annotated[UploadFile, File(...)],
+        context: Annotated[RequestContext, Depends(get_current_context)],
+        ingestion_service: Annotated[IngestionService, Depends(get_ingestion_service)],
+        metadata: Annotated[str, Form()] = "{}",
+        idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
     ) -> IngestionResponse:
         data = await file.read()
         if not data:
@@ -517,20 +520,7 @@ def _register_ingestion_routes(app: FastAPI) -> None:
                 detail="Uploaded file is empty",
             )
 
-        meta = {}
-        if metadata and metadata.strip():
-            try:
-                import json
-
-                meta = json.loads(metadata)
-                if not isinstance(meta, dict):
-                    raise ValueError("metadata must be a JSON object")
-            except (ValueError, json.JSONDecodeError):
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="metadata must be a valid JSON object",
-                )
-
+        meta = _parse_upload_metadata(metadata)
         payload = SourcePayload(
             data=data,
             filename=file.filename or "upload",
@@ -555,8 +545,8 @@ def _register_ingestion_routes(app: FastAPI) -> None:
     @app.get("/v1/ingestion/{job_id}")
     async def get_ingestion_job(
         job_id: str,
-        context: RequestContext = Depends(get_current_context),
-        ingestion_service: IngestionService = Depends(get_ingestion_service),
+        context: Annotated[RequestContext, Depends(get_current_context)],
+        ingestion_service: Annotated[IngestionService, Depends(get_ingestion_service)],
     ) -> dict[str, Any]:
         job = await ingestion_service.get_job(job_id, context=context)
         if job is None:
@@ -575,6 +565,295 @@ def _register_ingestion_routes(app: FastAPI) -> None:
         }
 
 
+@contextmanager
+def trace_span(
+    query_trace: QueryTrace | None,
+    name: str,
+    attributes: dict[str, Any] | None = None,
+) -> Iterator[Any]:
+    if query_trace is None:
+        with nullcontext() as span:
+            yield span
+        return
+    with query_trace.span(name, attributes) as span:
+        yield span
+
+
+async def _embed_query(query_text: str) -> list[float] | None:
+    if _embedding_provider is None:
+        return None
+    embed_result = _embedding_provider.embed([query_text], input_type="query")
+    if inspect.isawaitable(embed_result):
+        embeddings = await embed_result
+    else:
+        embeddings = embed_result
+    if embeddings:
+        return cast("list[float]", embeddings[0])
+    return None
+
+
+async def _lookup_semantic_cache(
+    request: QueryRequest,
+    context: RequestContext,
+    query_trace: QueryTrace | None = None,
+) -> tuple[list[float] | None, QueryResponse | None, str]:
+    cache_status = "bypass"
+    if _cache_service is not None:
+        cache_status = "miss"
+    cache_attrs = {"cache.status": cache_status}
+    with trace_span(query_trace, "cache.lookup", cache_attrs) as cache_span:
+        if _cache_service is None or _embedding_provider is None:
+            return None, None, cache_status
+        query_embedding: list[float] | None = None
+        try:
+            query_embedding = await _embed_query(request.query)
+            if query_embedding is None:
+                return None, None, cache_status
+            lookup = CacheLookup(
+                query_text=request.query,
+                query_embedding=query_embedding,
+                context=context,
+                route_depth=RouteDepth.SINGLE_HOP,
+                route_tool=RouteTool.VECTOR,
+                model_profile="default",
+                response_mode="direct",
+            )
+            hit = await _cache_service.lookup(lookup)
+            if hit is not None:
+                cache_status = "hit"
+                if query_trace is not None:
+                    query_trace.set_span_attribute(cache_span, "cache.status", "hit")
+                response = QueryResponse(
+                    results=[],
+                    trace_id=context.trace_id,
+                    query=request.query,
+                    answer=hit.entry.answer_text,
+                    citations=list(hit.entry.citations) if hit.entry.citations else [],
+                    cache_status="hit",
+                )
+                if query_trace is not None:
+                    query_trace.set_attributes(
+                        {
+                            "answer": response.answer,
+                            "retrieved_context": [],
+                            "cache.status": "hit",
+                        }
+                    )
+                return query_embedding, response, "hit"
+        except Exception:
+            if query_trace is not None:
+                query_trace.set_span_attribute(cache_span, "cache.lookup_error", True)
+            logger.warning("Semantic cache lookup failed; proceeding to retrieval")
+    return query_embedding, None, cache_status
+
+
+def _parse_version(val: object) -> int:
+    if isinstance(val, int):
+        return val
+    if isinstance(val, (str, float)):
+        try:
+            return int(val)
+        except (ValueError, OverflowError):
+            return 1
+    return 1
+
+
+def _serialize_chunks(result: RetrievalResult) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": chunk.id,
+            "text": chunk.text,
+            "score": chunk.score,
+            "document_id": getattr(chunk, "document_id", None),
+            "version": _parse_version(getattr(chunk, "version", 1)),
+            "metadata": getattr(chunk, "metadata", {}),
+        }
+        for chunk in result.chunks
+    ]
+
+
+def _collect_diagnostics(result: RetrievalResult) -> dict[str, Any]:
+    diag_dict: dict[str, Any] = {}
+    grader_diag = getattr(result, "diagnostics", None)
+    if grader_diag is not None:
+        if hasattr(grader_diag, "__dict__"):
+            diag_dict.update(
+                {k: v for k, v in grader_diag.__dict__.items() if not k.startswith("_")}
+            )
+        elif isinstance(grader_diag, dict):
+            diag_dict.update(grader_diag)
+    return diag_dict
+
+
+async def _synthesize_answer(  # noqa: PLR0913, PLR0917
+    request: QueryRequest,
+    context: RequestContext,
+    result: RetrievalResult,
+    results: list[dict[str, Any]],
+    query_embedding: list[float] | None,
+    diag_dict: dict[str, Any],
+    query_trace: QueryTrace | None,
+) -> tuple[str | None, list[dict[str, Any]] | None, str | None]:
+    answer_text: str | None = None
+    citations: list[dict[str, Any]] | None = None
+    groundedness_status: str | None = None
+
+    if request.generate and _generation_provider and results:
+        try:
+            with trace_span(
+                query_trace,
+                "answer.synthesize",
+                {"model.profile": "default", "answer.requested": True},
+            ):
+                passages = "\n\n".join(
+                    f"[{i + 1}] (Doc {r.get('document_id', 'unknown')}): {r['text']}"
+                    for i, r in enumerate(results[:5])
+                )
+                prompt = (
+                    "You are a helpful and accurate assistant. "
+                    "Answer the user query using ONLY the provided context.\n"
+                    "Cite sources inline where appropriate using [1], [2], etc.\n\n"
+                    f"Context:\n{passages}\n\n"
+                    f"Query: {request.query}\n\n"
+                    "Answer:"
+                )
+                answer_text = await _generation_provider.generate(
+                    prompt=prompt, max_tokens=1000, temperature=0.0
+                )
+                citations = [
+                    {
+                        "citation_index": i + 1,
+                        "document_id": r.get("document_id"),
+                        "chunk_id": r["id"],
+                        "version": _parse_version(r.get("version", 1)),
+                    }
+                    for i, r in enumerate(results[:5])
+                ]
+
+                # Post-generation NLI validation
+                with trace_span(query_trace, "guardrail.output"):
+                    guardrail_runner = GuardrailRunner()
+                    nli_check = await guardrail_runner.check_post_generation(
+                        answer=answer_text,
+                        evidence=result.chunks,
+                        context=context,
+                        citations=citations,
+                    )
+            if nli_check.details:
+                groundedness_status = nli_check.details.get("status")
+                diag_dict["post_generation_nli"] = nli_check.details
+            if nli_check.action == GuardrailAction.DENY:
+                diag_dict["nli_blocked"] = True
+
+            # Store in semantic cache if enabled
+            if _cache_service is not None and query_embedding is not None and answer_text:
+                try:
+                    settings = get_settings()
+                    referenced_versions = {
+                        str(r["document_id"]): _parse_version(r.get("version", 1))
+                        for r in results[:5]
+                        if r.get("document_id")
+                    }
+                    with trace_span(query_trace, "cache.write"):
+                        await _cache_service.put(
+                            CacheEntry(
+                                query_embedding=query_embedding,
+                                tenant_id=context.tenant_id,
+                                acl=context.acl,
+                                answer_text=answer_text,
+                                citations=citations,
+                                model_profile="default",
+                                response_mode="direct",
+                                referenced_document_versions=referenced_versions,
+                                cost_usd=0.0,
+                                latency_ms=0,
+                                expires_at=datetime.now(UTC)
+                                + timedelta(seconds=settings.cache_ttl_seconds),
+                            )
+                        )
+                except Exception:
+                    logger.warning("Failed to store in semantic cache")
+        except Exception:
+            logger.error("Answer generation failed")  # noqa: TRY400
+            answer_text = (
+                f"Retrieved {len(results)} relevant chunks, but failed to synthesize an answer."
+            )
+    elif request.generate and not results:
+        answer_text = "No relevant documents found for the given query."
+
+    return answer_text, citations, groundedness_status
+
+
+async def _execute_query_request(
+    request: QueryRequest,
+    context: RequestContext,
+    query_trace: QueryTrace | None,
+) -> QueryResponse:
+    if not _retrieval_service:
+        if query_trace is not None:
+            query_trace.set_attributes({"request.status": "retrieval_unavailable"})
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Retrieval service not initialized",
+        )
+
+    # 1. Semantic Cache Lookup (if enabled)
+    query_embedding, cached_response, cache_status = await _lookup_semantic_cache(
+        request, context, query_trace
+    )
+    if cached_response is not None:
+        return cached_response
+
+    # 2. Retrieval
+    query = RetrievalQuery(
+        text=request.query,
+        context=context,
+        limit=request.limit,
+        document_ids=request.document_ids,
+    )
+    retrieval_started = perf_counter()
+    with trace_span(
+        query_trace,
+        "retrieval.hybrid",
+        {"retrieval.limit": request.limit, "route.tool": "vector"},
+    ) as retrieval_span:
+        result = await _retrieval_service.retrieve(query)
+        retrieval_ms = (perf_counter() - retrieval_started) * 1000
+        if query_trace is not None:
+            query_trace.set_span_attribute(retrieval_span, "retrieval.duration_ms", retrieval_ms)
+
+    results = _serialize_chunks(result)
+    diag_dict = _collect_diagnostics(result)
+
+    # 3. Answer Generation & Cache Put
+    answer_text, citations, groundedness_status = await _synthesize_answer(
+        request, context, result, results, query_embedding, diag_dict, query_trace
+    )
+
+    response = QueryResponse(
+        results=results,
+        trace_id=context.trace_id,
+        query=request.query,
+        answer=answer_text,
+        citations=citations,
+        cache_status=cache_status,
+        groundedness_status=groundedness_status,
+        diagnostics=diag_dict or None,
+    )
+    if query_trace is not None:
+        query_trace.set_attributes(
+            {
+                "answer": answer_text,
+                "retrieved_context": [item["text"] for item in results[:5]],
+                "cache.status": cache_status,
+                "retrieval.duration_ms": retrieval_ms,
+                "response.result_count": len(results),
+                "guardrail.status": groundedness_status,
+            }
+        )
+    return response
+
+
 def _register_query_routes(app: FastAPI) -> None:
     @app.get("/health", response_model=HealthResponse)
     async def health_check() -> HealthResponse:
@@ -586,8 +865,8 @@ def _register_query_routes(app: FastAPI) -> None:
     @app.post("/v1/queries", response_model=QueryResponse)
     async def query_documents(
         request: QueryRequest,
-        context: RequestContext = Depends(get_current_context)
-    ):
+        context: Annotated[RequestContext, Depends(get_current_context)],
+    ) -> QueryResponse:
         query_trace: QueryTrace | None = None
         if _trace_manager is not None:
             try:
@@ -611,235 +890,6 @@ def _register_query_routes(app: FastAPI) -> None:
                 query_trace.set_attributes({"request.status": "complete"})
                 query_trace.__exit__(None, None, None)
             return response
-
-    @contextmanager
-    def trace_span(
-        query_trace: QueryTrace | None,
-        name: str,
-        attributes: dict[str, Any] | None = None,
-    ):
-        if query_trace is None:
-            with nullcontext() as span:
-                yield span
-            return
-        with query_trace.span(name, attributes) as span:
-            yield span
-
-    async def _execute_query_request(
-        request: QueryRequest,
-        context: RequestContext,
-        query_trace: QueryTrace | None,
-    ) -> QueryResponse:
-        if not _retrieval_service:
-            if query_trace is not None:
-                query_trace.set_attributes({"request.status": "retrieval_unavailable"})
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Retrieval service not initialized",
-            )
-
-        # 1. Semantic Cache Lookup (if enabled)
-        query_embedding: list[float] | None = None
-        cache_status = "bypass"
-        if _cache_service is not None:
-            cache_status = "miss"
-        cache_attrs = {"cache.status": cache_status}
-        with trace_span(query_trace, "cache.lookup", cache_attrs) as cache_span:
-            if _cache_service is not None and _embedding_provider is not None:
-                try:
-                    embeddings = await _embedding_provider.embed(
-                        [request.query], input_type="query"
-                    )
-                    if embeddings:
-                        query_embedding = embeddings[0]
-                        lookup = CacheLookup(
-                            query_text=request.query,
-                            query_embedding=query_embedding,
-                            context=context,
-                            route_depth=RouteDepth.SINGLE_HOP,
-                            route_tool=RouteTool.VECTOR,
-                            model_profile="default",
-                            response_mode="direct",
-                        )
-                        hit = await _cache_service.lookup(lookup)
-                        if hit is not None:
-                            cache_status = "hit"
-                            if query_trace is not None:
-                                query_trace.set_span_attribute(cache_span, "cache.status", "hit")
-                            response = QueryResponse(
-                                results=[],
-                                trace_id=context.trace_id,
-                                query=request.query,
-                                answer=hit.entry.answer_text,
-                                citations=list(hit.entry.citations)
-                                if hit.entry.citations
-                                else [],
-                                cache_status="hit",
-                            )
-                            if query_trace is not None:
-                                query_trace.set_attributes(
-                                    {
-                                        "answer": response.answer,
-                                        "retrieved_context": [],
-                                        "cache.status": "hit",
-                                    }
-                                )
-                            return response
-                except Exception:
-                    if query_trace is not None:
-                        query_trace.set_span_attribute(
-                            cache_span, "cache.lookup_error", True
-                        )
-                    logger.warning(
-                        "Semantic cache lookup failed; proceeding to retrieval"
-                    )
-
-        # 2. Retrieval
-        query = RetrievalQuery(
-            text=request.query,
-            context=context,
-            limit=request.limit,
-            document_ids=request.document_ids,
-        )
-        retrieval_started = perf_counter()
-        with trace_span(
-            query_trace,
-            "retrieval.hybrid",
-            {"retrieval.limit": request.limit, "route.tool": "vector"},
-        ) as retrieval_span:
-            result = await _retrieval_service.retrieve(query)
-            retrieval_ms = (perf_counter() - retrieval_started) * 1000
-            if query_trace is not None:
-                query_trace.set_span_attribute(
-                    retrieval_span, "retrieval.duration_ms", retrieval_ms
-                )
-        
-        results = []
-        for chunk in result.chunks:
-            results.append({
-                "id": chunk.id,
-                "text": chunk.text,
-                "score": chunk.score,
-                "document_id": getattr(chunk, 'document_id', None),
-                "version": int(getattr(chunk, 'version', 1) or 1),
-                "metadata": getattr(chunk, 'metadata', {}),
-            })
-        
-        # Collect retrieval grader diagnostics
-        diag_dict: dict[str, Any] = {}
-        grader_diag = getattr(result, "diagnostics", None)
-        if grader_diag is not None:
-            if hasattr(grader_diag, "__dict__"):
-                diag_dict.update({k: v for k, v in grader_diag.__dict__.items() if not k.startswith("_")})
-            elif isinstance(grader_diag, dict):
-                diag_dict.update(grader_diag)
-
-        # 3. Answer Generation & Cache Put
-        answer_text: str | None = None
-        citations: list[dict[str, Any]] | None = None
-        groundedness_status: str | None = None
-        if request.generate and _generation_provider and results:
-            try:
-                with trace_span(
-                    query_trace,
-                    "answer.synthesize",
-                    {"model.profile": "default", "answer.requested": True},
-                ):
-                    passages = "\n\n".join(
-                        f"[{i + 1}] (Doc {r.get('document_id', 'unknown')}): {r['text']}"
-                        for i, r in enumerate(results[:5])
-                    )
-                    prompt = (
-                        "You are a helpful and accurate assistant. Answer the user query using ONLY the provided context.\n"
-                        "Cite sources inline where appropriate using [1], [2], etc.\n\n"
-                        f"Context:\n{passages}\n\n"
-                        f"Query: {request.query}\n\n"
-                        "Answer:"
-                    )
-                    answer_text = await _generation_provider.generate(
-                        prompt=prompt, max_tokens=1000, temperature=0.0
-                    )
-                    citations = [
-                        {
-                            "citation_index": i + 1,
-                            "document_id": r.get("document_id"),
-                            "chunk_id": r["id"],
-                            "version": int(r.get("version", 1)),
-                        }
-                        for i, r in enumerate(results[:5])
-                    ]
-
-                    # Post-generation NLI validation
-                    with trace_span(query_trace, "guardrail.output"):
-                        guardrail_runner = GuardrailRunner()
-                        nli_check = await guardrail_runner.check_post_generation(
-                            answer=answer_text,
-                            evidence=result.chunks,
-                            context=context,
-                            citations=citations,
-                        )
-                if nli_check.details:
-                    groundedness_status = nli_check.details.get("status")
-                    diag_dict["post_generation_nli"] = nli_check.details
-                if nli_check.action == GuardrailAction.DENY:
-                    diag_dict["nli_blocked"] = True
-                
-                # Store in semantic cache if enabled
-                if _cache_service is not None and query_embedding is not None and answer_text:
-                    try:
-                        settings = get_settings()
-                        referenced_versions = {
-                            str(r["document_id"]): int(r.get("version", 1))
-                            for r in results[:5]
-                            if r.get("document_id")
-                        }
-                        with trace_span(query_trace, "cache.write"):
-                            await _cache_service.put(
-                                CacheEntry(
-                                    query_embedding=query_embedding,
-                                    tenant_id=context.tenant_id,
-                                    acl=context.acl,
-                                    answer_text=answer_text,
-                                    citations=citations,
-                                    model_profile="default",
-                                    response_mode="direct",
-                                    referenced_document_versions=referenced_versions,
-                                    cost_usd=0.0,
-                                    latency_ms=0.0,
-                                    expires_at=datetime.now(UTC)
-                                    + timedelta(seconds=settings.cache_ttl_seconds),
-                                )
-                            )
-                    except Exception:
-                        logger.warning("Failed to store in semantic cache")
-            except Exception:
-                logger.error("Answer generation failed")
-                answer_text = f"Retrieved {len(results)} relevant chunks, but failed to synthesize an answer."
-        elif request.generate and not results:
-            answer_text = "No relevant documents found for the given query."
-
-        response = QueryResponse(
-            results=results,
-            trace_id=context.trace_id,
-            query=request.query,
-            answer=answer_text,
-            citations=citations,
-            cache_status=cache_status,
-            groundedness_status=groundedness_status,
-            diagnostics=diag_dict or None,
-        )
-        if query_trace is not None:
-            query_trace.set_attributes(
-                {
-                    "answer": answer_text,
-                    "retrieved_context": [item["text"] for item in results[:5]],
-                    "cache.status": cache_status,
-                    "retrieval.duration_ms": retrieval_ms,
-                    "response.result_count": len(results),
-                    "guardrail.status": groundedness_status,
-                }
-            )
-        return response
 
     @app.get("/")
     async def read_root() -> FileResponse:

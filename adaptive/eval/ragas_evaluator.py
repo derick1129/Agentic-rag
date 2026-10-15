@@ -82,13 +82,9 @@ def _report(
     )
 
 
-def _valid_inputs(
-    items: Sequence[EvalItem], observations: Sequence[RagasObservation]
-) -> bool:
+def _valid_inputs(items: Sequence[EvalItem], observations: Sequence[RagasObservation]) -> bool:
     item_ids = [item.id for item in items]
-    if any(
-        not isinstance(item_id, str) or not _SAFE_ID.fullmatch(item_id) for item_id in item_ids
-    ):
+    if any(not isinstance(item_id, str) or not _SAFE_ID.fullmatch(item_id) for item_id in item_ids):
         return False
     if len(item_ids) != len(set(item_ids)):
         return False

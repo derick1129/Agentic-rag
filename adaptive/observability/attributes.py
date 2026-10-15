@@ -56,9 +56,8 @@ def _is_sensitive(key: str, config: TelemetryConfig) -> bool:
         return False
     if config.capture_content and lowered in _CAPTURE_CONTENT_KEYS:
         return False
-    return (
-        (config.redact_prompts and any(part in lowered for part in _PROMPT_KEYS))
-        or (config.redact_documents and any(part in lowered for part in _DOCUMENT_KEYS))
+    return (config.redact_prompts and any(part in lowered for part in _PROMPT_KEYS)) or (
+        config.redact_documents and any(part in lowered for part in _DOCUMENT_KEYS)
     )
 
 

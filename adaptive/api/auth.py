@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import logging
 import warnings
+from typing import Any
 
-from fastapi import Depends, Header, HTTPException, Request, status
 import jwt
-from fastapi import Header, HTTPException, Request, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from jwt.exceptions import (
     ExpiredSignatureError,
     ImmatureSignatureError,

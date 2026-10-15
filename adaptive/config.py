@@ -84,9 +84,7 @@ class Settings(BaseSettings):
     ragas_judge_api_base: str = Field(
         default="https://api.groq.com/openai/v1", alias="RAGAS_JUDGE_API_BASE"
     )
-    ragas_judge_model: str = Field(
-        default="openai/gpt-oss-20b", alias="RAGAS_JUDGE_MODEL"
-    )
+    ragas_judge_model: str = Field(default="openai/gpt-oss-20b", alias="RAGAS_JUDGE_MODEL")
 
     # NVIDIA NIMS Fallback
     nims_base_url: str = Field(default="https://integrate.api.nvidia.com/v1", alias="NIMS_BASE_URL")
@@ -179,9 +177,7 @@ class Settings(BaseSettings):
     phoenix_endpoint: str = Field(
         default="http://localhost:6006/v1/traces", alias="PHOENIX_ENDPOINT"
     )
-    phoenix_api_base_url: str = Field(
-        default="http://localhost:6006", alias="PHOENIX_API_BASE_URL"
-    )
+    phoenix_api_base_url: str = Field(default="http://localhost:6006", alias="PHOENIX_API_BASE_URL")
     phoenix_eval_groq_api_base: str = Field(default="", alias="PHOENIX_EVAL_GROQ_API_BASE")
     phoenix_eval_groq_model: str = Field(default="", alias="PHOENIX_EVAL_GROQ_MODEL")
     phoenix_eval_groq_api_key: SecretStr = Field(
