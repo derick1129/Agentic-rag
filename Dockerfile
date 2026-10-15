@@ -16,6 +16,9 @@ ENV UV_NO_DEV=0
 RUN uv sync --frozen --group dev
 ENTRYPOINT ["uv", "run", "--frozen", "--group", "dev", "pytest"]
 
+FROM builder AS evaluator-builder
+RUN uv sync --frozen --no-dev --extra phoenix-eval
+
 FROM python:3.11-slim-bookworm AS runtime
 
 ENV PATH="/app/.venv/bin:$PATH" \
@@ -28,6 +31,22 @@ RUN groupadd --system app && useradd --system --gid app --create-home app \
 
 WORKDIR /app
 COPY --from=builder --chown=app:app /app /app
+
+USER app
+ENTRYPOINT ["/app/docker/entrypoint.sh"]
+
+FROM python:3.11-slim-bookworm AS runtime-eval
+
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+RUN groupadd --system app && useradd --system --gid app --create-home app \
+    && mkdir -p /app /tmp/adaptive_rag_ingestion \
+    && chown -R app:app /app /tmp/adaptive_rag_ingestion
+
+WORKDIR /app
+COPY --from=evaluator-builder --chown=app:app /app /app
 
 USER app
 ENTRYPOINT ["/app/docker/entrypoint.sh"]
