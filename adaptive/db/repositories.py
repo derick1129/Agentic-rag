@@ -372,9 +372,7 @@ class IngestionJobRepository:
         model = self.session.scalar(query)
         return self._contract(model) if model else None
 
-    def get_by_idempotency_key(
-        self, tenant_id: str, idempotency_key: str
-    ) -> IngestionJob | None:
+    def get_by_idempotency_key(self, tenant_id: str, idempotency_key: str) -> IngestionJob | None:
         model = self.session.scalar(
             select(JobModel).where(
                 JobModel.tenant_id == tenant_id,
@@ -467,9 +465,7 @@ class IngestionJobRepository:
         lease_seconds: int,
     ) -> ClaimedIngestionJob:
         now_utc = _utc(now)
-        model = self._require_owned_running(
-            job_id, worker_id=worker_id, lease_token=lease_token
-        )
+        model = self._require_owned_running(job_id, worker_id=worker_id, lease_token=lease_token)
         if model.lease_expires_at is not None and _utc(model.lease_expires_at) <= now_utc:
             raise LeaseLostError("ingestion job lease lost")  # noqa: TRY003
         lease_expires_at = now_utc + timedelta(seconds=lease_seconds)
@@ -491,9 +487,7 @@ class IngestionJobRepository:
         lease_token: str,
         stage: str,
     ) -> IngestionJob:
-        model = self._require_owned_running(
-            job_id, worker_id=worker_id, lease_token=lease_token
-        )
+        model = self._require_owned_running(job_id, worker_id=worker_id, lease_token=lease_token)
         model.current_stage = stage
         model.updated_at = datetime.now(UTC)
         self.session.flush()
@@ -509,9 +503,7 @@ class IngestionJobRepository:
         error_code: str,
         error_message: str,
     ) -> IngestionJob:
-        model = self._require_owned_running(
-            job_id, worker_id=worker_id, lease_token=lease_token
-        )
+        model = self._require_owned_running(job_id, worker_id=worker_id, lease_token=lease_token)
         model.status = IngestionStatus.RETRY_WAIT.value
         model.available_at = _utc(available_at)
         model.error_code = error_code
@@ -531,9 +523,7 @@ class IngestionJobRepository:
         lease_token: str,
         document_id: str,
     ) -> IngestionJob:
-        model = self._require_owned_running(
-            job_id, worker_id=worker_id, lease_token=lease_token
-        )
+        model = self._require_owned_running(job_id, worker_id=worker_id, lease_token=lease_token)
         model.status = IngestionStatus.ACTIVE.value
         model.current_stage = IngestionStatus.ACTIVE.value
         model.document_id = document_id
@@ -555,9 +545,7 @@ class IngestionJobRepository:
         error_code: str,
         error_message: str,
     ) -> IngestionJob:
-        model = self._require_owned_running(
-            job_id, worker_id=worker_id, lease_token=lease_token
-        )
+        model = self._require_owned_running(job_id, worker_id=worker_id, lease_token=lease_token)
         model.status = IngestionStatus.DEAD_LETTER.value
         model.error_code = error_code
         model.error_message = " ".join(error_message.split())[:500]
@@ -568,9 +556,7 @@ class IngestionJobRepository:
         self.session.flush()
         return self._contract(model)
 
-    def _require_owned_running(
-        self, job_id: str, *, worker_id: str, lease_token: str
-    ) -> JobModel:
+    def _require_owned_running(self, job_id: str, *, worker_id: str, lease_token: str) -> JobModel:
         model = self.session.get(JobModel, job_id)
         if (
             model is None
