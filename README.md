@@ -68,7 +68,7 @@ cache_probe  bm25_search  vector_ann  tool_dispatch
    - Re-ranks top candidates using the **NVIDIA NIM Cross-Encoder** (`nvidia/llama-nemotron-rerank-vl-1b-v2`).
    - Applies evidence validation filters and strictly enforces context token budgets (`RETRIEVAL_CONTEXT_TOKEN_BUDGET`).
 5. **Grounded Answer Synthesis**: Context assembly feeds into the generation engine (Meta LLaMA 3.1 8B Instruct / OpenAI GPT-4o-mini), enforcing strict inline evidence citations (`[1]`, `[2]`). Newly synthesized answers are asynchronously cached in Redis for future hits.
-6. **Observability & Feedback Loop**: Continuous OTLP span collection via **Ariadne Phoenix**, profiling latency, token consumption, and retrieval quality, protected by an automated zero-leakage prompt and PII redaction filter.
+6. **Observability & Feedback Loop**: OpenTelemetry traces flow to **Arize Phoenix**. Query and retrieved content capture is a separate opt-in and is disabled by default.
 
 ---
 
@@ -82,7 +82,7 @@ cache_probe  bm25_search  vector_ann  tool_dispatch
 - **Deterministic Inline Citations**: Context assembly ensures generated responses cite source documents directly (`[1]`, `[2]`), mapping chunk IDs back to source documents.
 - **Multi-Tenant Isolation**: Tenant-scoped database queries, Redis vector indexes, and access control contexts (`RequestContext`).
 - **Interactive Web Dashboard**: Built-in visual console at `/dashboard` for testing document ingestion, real-time job tracking, and hybrid query verification.
-- **Privacy-First Observability**: Full OTLP tracing to Ariadne Phoenix with redaction filters for prompts, documents, and credentials.
+- **Privacy-First Observability**: OTLP traces go to Arize Phoenix with query, answer, and retrieved-context capture disabled by default and credential redaction always enabled.
 
 ---
 
@@ -129,6 +129,11 @@ CACHE_ENABLED=true
 CACHE_SIMILARITY_THRESHOLD=0.15
 REDIS_HOST=redis
 REDIS_PORT=6379
+
+# Phoenix trace collection (content remains off unless explicitly enabled)
+PHOENIX_ENABLED=true
+PHOENIX_CAPTURE_CONTENT=false
+PHOENIX_PROJECT_NAME=adaptive-rag
 ```
 
 ### 2. Launch Local Stack
@@ -154,6 +159,48 @@ docker compose down
 # Use -v only if you intentionally wish to erase local database volumes:
 docker compose down -v
 ```
+
+### Phoenix traces and offline evaluations
+
+The API and worker export safe trace metadata to the Phoenix service at
+`http://phoenix:6006`; the local Phoenix UI is at `http://localhost:6006`.
+`PHOENIX_ENABLED` controls trace export. `PHOENIX_CAPTURE_CONTENT` is an
+independent setting that defaults to `false`. With content capture enabled,
+traces include only the selected query, answer, and retrieved-context fields;
+credentials and unrelated sensitive attributes remain redacted.
+
+Content capture must be enabled when the API records the trace and again for the
+explicit evaluator invocation. Set the Groq model and key in the ignored local
+`.env` file, then run one selected trace:
+
+```bash
+docker compose --profile eval run --rm phoenix-eval \
+  --project adaptive-rag --trace-id <trace-id>
+```
+
+Or choose a bounded time range of up to seven days:
+
+```bash
+docker compose --profile eval run --rm phoenix-eval \
+  --project adaptive-rag --since 2026-10-15T00:00:00Z --until 2026-10-16T00:00:00Z
+```
+
+Set `PHOENIX_CAPTURE_CONTENT=true` and `PHOENIX_EVAL_GROQ_API_KEY` in `.env`
+before running the command. The evaluator image and Phoenix SDK are built only
+for this one-shot Compose profile. Phoenix faithfulness and document relevance
+evaluators send selected trace content to the configured Groq endpoint only
+during this explicit run. Phoenix may also retain evaluator input/output traces
+in the configured project. CLI output contains only run identifiers, counts,
+and sanitized status categories.
+
+For a custom Phoenix server, set `PHOENIX_EVAL_API_BASE_URL` to a URL reachable
+from the evaluator container. Its default is `http://phoenix:6006`; host-local
+`localhost` URLs are not reachable from inside that container. This evaluator
+URL is independent of the OTLP collector endpoint (`PHOENIX_ENDPOINT`).
+
+Phoenix annotations do not calculate deterministic retrieval metrics. MRR,
+recall@k, and nDCG keep their existing semantics, and Ragas remains an
+independent offline evaluator with no score export to Phoenix.
 
 ---
 
@@ -240,28 +287,21 @@ Access the built-in control dashboard at **`http://localhost:8000/dashboard`**:
 
 ## 🧪 Development & Quality Assurance
 
-Run the test suite and static analysis locally using `uv`:
+Run the test suite and static analysis in the Docker development image:
 
 ```bash
-# 1. Synchronize dependencies
-uv sync --frozen --all-groups
+# Full unit and integration suite
+docker compose --profile test run --rm test
 
-# 2. Code formatting & linting
-uv run ruff check .
-uv run ruff format --check .
+# Lint and type checks in the same image
+docker compose --profile test run --rm --entrypoint uv test run --frozen --group dev ruff check .
+docker compose --profile test run --rm --entrypoint uv test run --frozen --group dev mypy adaptive
 
-# 3. Static type validation
-uv run mypy adaptive
-
-# 4. Unit & integration test execution
-uv run pytest tests -q
-
-# 5. Smoke test Compose configuration
+# Smoke test Compose configuration
 docker compose config
-uv run pytest tests/smoke -q
 
-# 6. Verify Docker build
-docker build --target runtime -t adaptive-rag:local .
+# Build the serving and optional evaluator images
+docker compose build api worker phoenix-eval
 ```
 
 ---
