@@ -74,3 +74,4 @@ def test_test_service_is_opt_in_and_uses_dev_dependencies() -> None:
     assert service["profiles"] == ["test"]
     assert service["build"]["target"] == "test"
     assert service["entrypoint"] == ["uv", "run", "--frozen", "--group", "dev", "pytest"]
+    assert service["volumes"] == ["./tests:/app/tests:ro"]

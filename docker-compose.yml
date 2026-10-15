@@ -5,6 +5,8 @@ services:
       context: .
       target: test
     entrypoint: ["uv", "run", "--frozen", "--group", "dev", "pytest"]
+    volumes:
+      - ./tests:/app/tests:ro
 
   api:
     build:
