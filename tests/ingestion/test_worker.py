@@ -83,7 +83,7 @@ class TestWorkerConfigAndBackoff:
     """Verify Spec Requirement 6 & 10 configuration bounds and backoff schedule."""
 
     def test_settings_defaults_match_spec(self) -> None:
-        settings = Settings(DATABASE_URL="postgresql://db", OPENSEARCH_URL="http://search")
+        settings = Settings(DATABASE_URL="postgresql://db")
         assert settings.ingestion_max_attempts == 5
         assert settings.ingestion_retry_base_seconds == 2
         assert settings.ingestion_retry_max_seconds == 300
@@ -109,7 +109,6 @@ class TestWorkerConfigAndBackoff:
     ) -> None:
         kwargs: dict[str, Any] = {
             "DATABASE_URL": "postgresql://db",
-            "OPENSEARCH_URL": "http://search",
             field_name: invalid_value,
         }
         with pytest.raises(ValidationError):
@@ -119,7 +118,6 @@ class TestWorkerConfigAndBackoff:
         with pytest.raises(ValidationError, match="ingestion_retry_max_seconds"):
             Settings(
                 DATABASE_URL="postgresql://db",
-                OPENSEARCH_URL="http://search",
                 INGESTION_RETRY_BASE_SECONDS=10,
                 INGESTION_RETRY_MAX_SECONDS=5,
             )

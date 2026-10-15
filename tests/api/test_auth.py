@@ -27,7 +27,6 @@ def make_settings(
     """Helper to create Settings instance for testing."""
     return Settings(
         DATABASE_URL="postgresql://localhost/test",
-        OPENSEARCH_URL="http://localhost:9200",
         AUTH_MODE=auth_mode,
         AUTH_JWT_SECRET=jwt_secret,
         AUTH_JWT_ALGORITHM=jwt_algorithm,

@@ -3,7 +3,6 @@ from adaptive.config import Settings
 
 def test_phoenix_content_capture_is_opt_in_and_independent_of_enabled(monkeypatch) -> None:
     monkeypatch.setenv("DATABASE_URL", "postgresql://db/test")
-    monkeypatch.setenv("OPENSEARCH_URL", "http://search:9200")
     monkeypatch.delenv("PHOENIX_CAPTURE_CONTENT", raising=False)
     monkeypatch.setenv("PHOENIX_ENABLED", "true")
     defaults = Settings()
@@ -19,7 +18,6 @@ def test_phoenix_content_capture_is_opt_in_and_independent_of_enabled(monkeypatc
 
 def test_phoenix_api_and_evaluation_settings_keep_keys_secret(monkeypatch) -> None:
     monkeypatch.setenv("DATABASE_URL", "postgresql://db/test")
-    monkeypatch.setenv("OPENSEARCH_URL", "http://search:9200")
     monkeypatch.setenv("PHOENIX_API_BASE_URL", "http://phoenix:6006")
     monkeypatch.setenv("PHOENIX_EVAL_GROQ_API_BASE", "https://groq.example/v1")
     monkeypatch.setenv("PHOENIX_EVAL_GROQ_MODEL", "llama-test")

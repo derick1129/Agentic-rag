@@ -91,7 +91,7 @@ flowchart TD
 | **API & Framework** | FastAPI, Uvicorn, Pydantic v2 | High-throughput asynchronous REST API |
 | **Relational Database** | PostgreSQL 16 + `pgvector` | Chunk storage, metadata, and HNSW vector similarity |
 | **Semantic Cache** | Redis Stack 7.2 (RediSearch) | Vector-similarity caching with cosine distance |
-| **Search Engine** | OpenSearch 2.11 & Rank-BM25 | Inverted index lexical search & multi-tenant indexing |
+| **Search Engine** | Rank-BM25 & pgvector | Lexical search and dense vector ANN similarity |
 | **Neural Models** | NVIDIA NIM / OpenAI | Nemotron embeddings, LLaMA 3.1 8B, Nemotron Rerank |
 | **Observability** | Ariadne Phoenix, OpenTelemetry | OTLP distributed tracing, token profiling, latency metrics |
 | **Migrations & ORM** | SQLAlchemy 2.0, Alembic | Declarative database schema and version control |
@@ -147,7 +147,6 @@ The stack provisions:
 - **Interactive Dashboard**: [http://localhost:8000/dashboard](http://localhost:8000/dashboard)
 - **API Documentation**: [http://localhost:8000/docs](http://localhost:8000/docs)
 - **Ariadne Phoenix Tracing**: [http://localhost:6006](http://localhost:6006)
-- **OpenSearch**: [http://localhost:9200](http://localhost:9200)
 - **PostgreSQL (pgvector)**: `localhost:5432`
 - **Redis (RediSearch)**: `localhost:6379`
 

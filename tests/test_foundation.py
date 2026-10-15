@@ -91,7 +91,7 @@ class TestFoundationRuntime:
         assert state.app_state.startup_time > 0
 
     def test_settings_validate_cross_field_limits(self):
-        settings = Settings(DATABASE_URL="postgresql://db", OPENSEARCH_URL="http://search")
+        settings = Settings(DATABASE_URL="postgresql://db")
         assert settings.ingestion_chunk_overlap_tokens < settings.ingestion_chunk_max_tokens
         assert settings.retrieval_fusion_k <= max(
             settings.retrieval_bm25_k, settings.retrieval_dense_k
@@ -100,7 +100,6 @@ class TestFoundationRuntime:
         with pytest.raises(ValidationError, match="overlap_tokens must be less than max_tokens"):
             Settings(
                 DATABASE_URL="postgresql://db",
-                OPENSEARCH_URL="http://search",
                 INGESTION_CHUNK_MAX_TOKENS=100,
                 INGESTION_CHUNK_OVERLAP_TOKENS=100,
             )
@@ -108,7 +107,6 @@ class TestFoundationRuntime:
         with pytest.raises(ValidationError, match="fusion_k must not exceed"):
             Settings(
                 DATABASE_URL="postgresql://db",
-                OPENSEARCH_URL="http://search",
                 RETRIEVAL_BM25_K=10,
                 RETRIEVAL_DENSE_K=10,
                 RETRIEVAL_FUSION_K=11,

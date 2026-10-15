@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 os.environ.setdefault("DATABASE_URL", "postgresql+psycopg://localhost/test")
-os.environ.setdefault("OPENSEARCH_URL", "http://localhost:9200")
 
 import pytest
 from fastapi import status
@@ -33,7 +32,6 @@ async def _noop_lifespan(_app: object):
 @pytest.fixture(autouse=True)
 def _set_test_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://localhost/test")
-    monkeypatch.setenv("OPENSEARCH_URL", "http://localhost:9200")
 
 
 @pytest.fixture

@@ -85,26 +85,6 @@ jobs:
       - run: uv sync --frozen --all-groups
       - run: if [ -d tests/db ]; then uv run pytest tests/db -q; else echo 'No database integration tests yet'; fi
 
-  opensearch-integration:
-    name: OpenSearch integration tests
-    runs-on: ubuntu-latest
-    needs: lock
-    services:
-      opensearch:
-        image: opensearchproject/opensearch:2.17.1
-        env:
-          discovery.type: single-node
-          DISABLE_SECURITY_PLUGIN: "true"
-          DISABLE_INSTALL_DEMO_CONFIG: "true"
-          OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
-        ports:
-          - 9200:9200
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-      - run: uv sync --frozen --all-groups
-      - run: if [ -d tests/retrieval ]; then uv run pytest tests/retrieval -q; else echo 'No OpenSearch integration tests yet'; fi
-
   smoke:
     name: Compose and smoke tests
     runs-on: ubuntu-latest
