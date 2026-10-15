@@ -1,4 +1,30 @@
 services:
+  test:
+    profiles: ["test"]
+    build:
+      context: .
+      target: test
+    entrypoint: ["uv", "run", "--frozen", "--group", "dev", "pytest"]
+    volumes:
+      - ./tests:/app/tests:ro
+
+  phoenix-eval:
+    profiles: ["eval"]
+    build:
+      context: .
+      target: runtime-eval
+    entrypoint: ["python", "-m", "adaptive.observability.phoenix_eval_cli"]
+    environment:
+      PHOENIX_API_BASE_URL: ${PHOENIX_EVAL_API_BASE_URL:-http://phoenix:6006}
+      PHOENIX_CAPTURE_CONTENT: ${PHOENIX_CAPTURE_CONTENT:-false}
+      PHOENIX_PROJECT_NAME: ${PHOENIX_PROJECT_NAME:-adaptive-rag}
+      PHOENIX_EVAL_GROQ_API_BASE: ${PHOENIX_EVAL_GROQ_API_BASE:-https://api.groq.com/openai/v1}
+      PHOENIX_EVAL_GROQ_MODEL: ${PHOENIX_EVAL_GROQ_MODEL:-llama-3.3-70b-versatile}
+      PHOENIX_EVAL_GROQ_API_KEY: ${PHOENIX_EVAL_GROQ_API_KEY:-}
+    depends_on:
+      phoenix:
+        condition: service_healthy
+
   api:
     build:
       context: .
@@ -66,6 +92,8 @@ services:
       # Phoenix Observability
       PHOENIX_ENABLED: ${PHOENIX_ENABLED:-true}
       PHOENIX_ENDPOINT: ${PHOENIX_ENDPOINT:-http://phoenix:6006/v1/traces}
+      PHOENIX_API_BASE_URL: ${PHOENIX_API_BASE_URL:-http://phoenix:6006}
+      PHOENIX_CAPTURE_CONTENT: ${PHOENIX_CAPTURE_CONTENT:-false}
       PHOENIX_PROJECT_NAME: ${PHOENIX_PROJECT_NAME:-adaptive-rag}
       PHOENIX_REDACT_PROMPTS: ${PHOENIX_REDACT_PROMPTS:-true}
       PHOENIX_REDACT_DOCUMENTS: ${PHOENIX_REDACT_DOCUMENTS:-true}
@@ -178,10 +206,16 @@ services:
     volumes:
       - phoenix_data:/mnt/data
     healthcheck:
-      test: ["CMD", "echo", "OK"]
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:6006/healthz', timeout=2)",
+        ]
       interval: 10s
       timeout: 5s
-      retries: 0
+      retries: 12
       start_period: 5s
 
 volumes:
