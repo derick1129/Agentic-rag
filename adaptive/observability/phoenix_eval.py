@@ -177,6 +177,7 @@ class PhoenixEvaluationSummary:
         default_factory=lambda: {metric: MetricSummary() for metric in _METRICS}
     )
     annotations_logged: int = 0
+    missing_requested_trace_ids: int = 0
     run_errors: Counter[str] = field(default_factory=Counter)
 
     def as_dict(self) -> dict[str, object]:
@@ -187,6 +188,7 @@ class PhoenixEvaluationSummary:
             "project": self.project,
             "selected_spans": self.selected_spans,
             "annotations_logged": self.annotations_logged,
+            "missing_requested_trace_ids": self.missing_requested_trace_ids,
             "metrics": {name: metric.as_dict() for name, metric in self.metrics.items()},
             "run_errors": dict(sorted(self.run_errors.items())),
         }
@@ -245,8 +247,13 @@ def evaluate_selected_traces(
             raise
         raise PhoenixEvaluationError("phoenix_span_query_failed") from exc
 
+    returned_trace_ids = _returned_trace_ids(rows)
     selected = _select_captured_spans(rows, selection.trace_ids)
     summary.selected_spans = len(selected)
+    missing_trace_ids = set(selection.trace_ids).difference(returned_trace_ids)
+    if missing_trace_ids:
+        summary.missing_requested_trace_ids = len(missing_trace_ids)
+        summary.run_errors["requested_trace_ids_missing"] = len(missing_trace_ids)
     annotations: dict[str, list[dict[str, object]]] = {metric: [] for metric in _METRICS}
     for span in selected:
         _evaluate_faithfulness(span, runtime, summary, annotations["faithfulness"])
@@ -286,12 +293,38 @@ def _dataframe_records(frame: Any) -> list[Mapping[str, object]]:
         records = frame
     if not isinstance(records, Iterable):
         raise PhoenixEvaluationError("invalid_phoenix_span_response")
+    index_name, index_values = _named_index_values(frame)
     mapped: list[Mapping[str, object]] = []
-    for row in records:
+    for position, row in enumerate(records):
         if not isinstance(row, Mapping):
             raise PhoenixEvaluationError("invalid_phoenix_span_response")
-        mapped.append(row)
+        mapped_row = dict(row)
+        if (
+            index_name is not None
+            and index_values is not None
+            and position < len(index_values)
+            and index_name not in mapped_row
+        ):
+            mapped_row[index_name] = index_values[position]
+        mapped.append(mapped_row)
     return mapped
+
+
+def _named_index_values(frame: Any) -> tuple[str | None, list[object] | None]:
+    """Keep Phoenix's named span-id index when records omit it as a column."""
+
+    index = getattr(frame, "index", None)
+    index_name = getattr(index, "name", None)
+    if index_name not in _FIELD_CANDIDATES["span_id"]:
+        return None, None
+    try:
+        return index_name, list(index)
+    except TypeError:
+        return None, None
+
+
+def _returned_trace_ids(rows: Sequence[Mapping[str, object]]) -> set[str]:
+    return {trace_id for row in rows if (trace_id := _string_value(row, "trace_id")) is not None}
 
 
 def _select_captured_spans(

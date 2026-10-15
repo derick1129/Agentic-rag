@@ -17,22 +17,41 @@ from adaptive.observability import phoenix_eval
 
 
 class FakeSpans:
-    def __init__(self, rows: Sequence[Mapping[str, object]]) -> None:
+    def __init__(self, rows: object) -> None:
         self.rows = rows
         self.queries: list[dict[str, object]] = []
         self.annotations: list[tuple[object, dict[str, object]]] = []
 
-    def get_spans_dataframe(self, **kwargs: object) -> list[Mapping[str, object]]:
+    def get_spans_dataframe(self, **kwargs: object) -> object:
         self.queries.append(kwargs)
-        return list(self.rows)
+        return self.rows
 
     def log_span_annotations_dataframe(self, dataframe: object, **kwargs: object) -> None:
         self.annotations.append((dataframe, kwargs))
 
 
 class FakeClient:
-    def __init__(self, rows: Sequence[Mapping[str, object]]) -> None:
+    def __init__(self, rows: object) -> None:
         self.spans = FakeSpans(rows)
+
+
+class FakeIndex:
+    def __init__(self, name: str, values: Sequence[str]) -> None:
+        self.name = name
+        self.values = values
+
+    def __iter__(self):
+        return iter(self.values)
+
+
+class FakeDataFrame:
+    def __init__(self, rows: Sequence[Mapping[str, object]], index: FakeIndex) -> None:
+        self.rows = rows
+        self.index = index
+
+    def to_dict(self, *, orient: str) -> list[Mapping[str, object]]:
+        assert orient == "records"
+        return list(self.rows)
 
 
 class FakeEvaluator:
@@ -148,6 +167,52 @@ def test_time_selection_passes_bounded_range_to_phoenix_client() -> None:
             "end_time": end,
         }
     ]
+
+
+def test_dataframe_named_span_id_index_is_preserved_for_annotations() -> None:
+    frame = FakeDataFrame(
+        [
+            {
+                "context.trace_id": "trace-selected",
+                "attributes.query": "source query",
+                "attributes.answer": "source answer",
+                "attributes.retrieved_context": ["source document"],
+            }
+        ],
+        FakeIndex("context.span_id", ["span-from-index"]),
+    )
+    runtime, client, _, _ = _runtime([])
+    client.spans.rows = frame
+
+    evaluate_selected_traces(_selection(), _settings(), runtime)
+
+    assert all(
+        row["span_id"] == "span-from-index"
+        for call in client.spans.annotations
+        for row in call[0]
+    )
+
+
+def test_missing_requested_trace_ids_are_reported_as_a_sanitized_count() -> None:
+    runtime, _, faithfulness, relevance = _runtime(
+        [
+            {
+                "context.trace_id": "trace-returned",
+                "context.span_id": "span-returned",
+                "attributes.query": "other query",
+                "attributes.answer": "other answer",
+                "attributes.retrieved_context": ["other document"],
+            }
+        ]
+    )
+
+    summary = evaluate_selected_traces(_selection(), _settings(), runtime)
+
+    assert summary.selected_spans == 0
+    assert summary.missing_requested_trace_ids == 1
+    assert summary.run_errors == {"requested_trace_ids_missing": 1}
+    assert faithfulness.calls == []
+    assert relevance.calls == []
 
 
 @pytest.mark.parametrize(

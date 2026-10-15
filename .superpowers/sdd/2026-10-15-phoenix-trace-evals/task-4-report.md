@@ -20,7 +20,9 @@ only when the explicit run begins.
 The command queries the requested Phoenix project through
 `client.spans.get_spans_dataframe`, filters trace IDs locally, and sends results
 back through `client.spans.log_span_annotations_dataframe`. It never relies on a
-server-side trace-ID filter.
+server-side trace-ID filter. If requested IDs are absent from the bounded client
+result, the sanitized summary reports `missing_requested_trace_ids` and the fixed
+`requested_trace_ids_missing` category instead of silently reporting an empty run.
 
 ## Sanitized behavior
 
@@ -40,7 +42,8 @@ the explicit runtime builder. The CLI is exposed as `adaptive-phoenix-eval` in
 
 The new unit tests use injected fake clients/evaluators to cover project/time
 selection, local trace filtering, evaluator input mapping, content-based skips,
-annotation linkage, lazy imports, and sanitized CLI output.
+annotation linkage, Phoenix's named span-ID DataFrame index, missing requested
+trace IDs, lazy imports, and sanitized CLI output.
 
 ## Checks
 
