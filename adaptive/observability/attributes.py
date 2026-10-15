@@ -18,9 +18,10 @@ class TelemetryConfig:
     redact_prompts: bool = True
     redact_documents: bool = True
     redact_credentials: bool = True
+    capture_content: bool = False
 
 
-_PROMPT_KEYS = ("prompt", "query", "completion", "input", "output")
+_PROMPT_KEYS = ("prompt", "query", "completion", "input", "output", "answer")
 _DOCUMENT_KEYS = ("document", "retrieved", "content", "context", "text")
 _CREDENTIAL_KEYS = (
     "api_key",
@@ -31,6 +32,7 @@ _CREDENTIAL_KEYS = (
     "token",
     "credential",
 )
+_CAPTURE_CONTENT_KEYS = frozenset({"query", "answer", "retrieved_context"})
 
 
 def query_hash(query: str) -> str:
@@ -48,12 +50,15 @@ def scope_id(tenant_id: str, acl: frozenset[str] | set[str] | tuple[str, ...] = 
 
 def _is_sensitive(key: str, config: TelemetryConfig) -> bool:
     lowered = key.lower()
+    if any(part in lowered for part in _CREDENTIAL_KEYS):
+        return True
     if lowered.endswith(".hash") or lowered in {"query_hash", "scope_id"}:
+        return False
+    if config.capture_content and lowered in _CAPTURE_CONTENT_KEYS:
         return False
     return (
         (config.redact_prompts and any(part in lowered for part in _PROMPT_KEYS))
         or (config.redact_documents and any(part in lowered for part in _DOCUMENT_KEYS))
-        or (config.redact_credentials and any(part in lowered for part in _CREDENTIAL_KEYS))
     )
 
 

@@ -4,7 +4,7 @@ from functools import lru_cache
 from typing import Literal
 from urllib.parse import parse_qs, urlparse, urlunparse
 
-from pydantic import Field, ValidationInfo, field_validator
+from pydantic import Field, SecretStr, ValidationInfo, field_validator
 from pydantic_core import PydanticCustomError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -166,8 +166,17 @@ class Settings(BaseSettings):
     )
 
     phoenix_enabled: bool = Field(default=True, alias="PHOENIX_ENABLED")
+    phoenix_capture_content: bool = Field(default=False, alias="PHOENIX_CAPTURE_CONTENT")
     phoenix_endpoint: str = Field(
         default="http://localhost:6006/v1/traces", alias="PHOENIX_ENDPOINT"
+    )
+    phoenix_api_base_url: str = Field(
+        default="http://localhost:6006", alias="PHOENIX_API_BASE_URL"
+    )
+    phoenix_eval_groq_api_base: str = Field(default="", alias="PHOENIX_EVAL_GROQ_API_BASE")
+    phoenix_eval_groq_model: str = Field(default="", alias="PHOENIX_EVAL_GROQ_MODEL")
+    phoenix_eval_groq_api_key: SecretStr = Field(
+        default=SecretStr(""), alias="PHOENIX_EVAL_GROQ_API_KEY"
     )
     phoenix_project_name: str = Field(default="adaptive-rag", alias="PHOENIX_PROJECT_NAME")
     phoenix_redact_prompts: bool = Field(default=True, alias="PHOENIX_REDACT_PROMPTS")
